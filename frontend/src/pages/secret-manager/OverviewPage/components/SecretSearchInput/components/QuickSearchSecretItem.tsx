@@ -10,6 +10,7 @@ import {
   TooltipTrigger
 } from "@app/components/v3";
 import { SecretV3RawSanitized } from "@app/hooks/api/secrets/types";
+import type { SecretOverviewPageSearch } from "@app/pages/secret-manager/OverviewPage/overviewSearch";
 
 import { QuickSearchMetadata, QuickSearchMetadataList } from "./QuickSearchMetadataList";
 import { QuickSearchSecretCopyButton } from "./QuickSearchSecretCopyButton";
@@ -42,7 +43,7 @@ export const QuickSearchSecretItem = ({
   const handleNavigate = () => {
     onSelectResult({ search: secret.key, tags });
     navigate({
-      search: (prev) => ({
+      search: (prev: SecretOverviewPageSearch) => ({
         ...prev,
         secretPath: secret.path,
         search: undefined,

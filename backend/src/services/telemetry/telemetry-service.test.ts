@@ -36,7 +36,9 @@ const postHogClient = {
 };
 
 vi.mock("posthog-node", () => ({
-  PostHog: vi.fn(() => postHogClient)
+  PostHog: vi.fn(function PostHog() {
+    return postHogClient;
+  })
 }));
 
 // The drain's health signals: what it published, what it lost, and what it left behind. Spied here

@@ -1,6 +1,9 @@
 import { FileRouteTypes } from "@app/routeTree.gen";
 
-const setRoute = <TFull extends FileRouteTypes["fullPaths"], TId extends FileRouteTypes["id"]>(
+const setRoute = <
+  TFull extends FileRouteTypes["fullPaths"] | FileRouteTypes["to"],
+  TId extends FileRouteTypes["id"]
+>(
   path: TFull,
   id: TId
 ) => ({ path, id }) as const;
@@ -345,7 +348,7 @@ export const ROUTE_PATHS = Object.freeze({
     ),
     SubscribersPage: setRoute(
       "/organizations/$orgId/cert-manager/subscribers",
-      "/_authenticate/_inject-org-details/_org-layout/organizations/$orgId/cert-manager/_cert-manager-layout/subscribers"
+      "/_authenticate/_inject-org-details/_org-layout/organizations/$orgId/cert-manager/_cert-manager-layout/subscribers/"
     ),
     CertificateAuthoritiesPage: setRoute(
       "/organizations/$orgId/cert-manager/certificate-authorities",
@@ -381,7 +384,7 @@ export const ROUTE_PATHS = Object.freeze({
     ),
     CodeSigningPage: setRoute(
       "/organizations/$orgId/cert-manager/code-signing",
-      "/_authenticate/_inject-org-details/_org-layout/organizations/$orgId/cert-manager/_cert-manager-layout/code-signing"
+      "/_authenticate/_inject-org-details/_org-layout/organizations/$orgId/cert-manager/_cert-manager-layout/code-signing/"
     )
   },
   SecretScanning: {

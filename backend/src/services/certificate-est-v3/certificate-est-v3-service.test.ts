@@ -22,9 +22,11 @@ vi.mock("@peculiar/x509", () => ({
   GeneralNames: vi.fn(),
   KeyUsagesExtension: vi.fn(),
   ExtendedKeyUsageExtension: vi.fn(),
-  X509Certificate: vi.fn().mockImplementation(() => ({
-    rawData: new ArrayBuffer(0)
-  })),
+  X509Certificate: vi.fn().mockImplementation(function X509Certificate() {
+    return {
+      rawData: new ArrayBuffer(0)
+    };
+  }),
   KeyUsageFlags: {
     digitalSignature: 1,
     nonRepudiation: 2,
@@ -399,20 +401,26 @@ describe("CertificateEstV3Service", () => {
     beforeEach(async () => {
       const { Pkcs10CertificateRequest, X509Certificate, GeneralNames } = await import("@peculiar/x509");
 
-      (Pkcs10CertificateRequest as any).mockImplementation(() => ({
-        subject: "CN=test.example.com",
-        extensions: []
-      }));
+      (Pkcs10CertificateRequest as any).mockImplementation(function Pkcs10CertificateRequestMock() {
+        return {
+          subject: "CN=test.example.com",
+          extensions: []
+        };
+      });
 
-      (X509Certificate as any).mockImplementation(() => ({
-        subject: "CN=test.example.com",
-        extensions: [],
-        rawData: new ArrayBuffer(0)
-      }));
+      (X509Certificate as any).mockImplementation(function X509CertificateMock() {
+        return {
+          subject: "CN=test.example.com",
+          extensions: [],
+          rawData: new ArrayBuffer(0)
+        };
+      });
 
-      (GeneralNames as any).mockImplementation(() => ({
-        items: []
-      }));
+      (GeneralNames as any).mockImplementation(function GeneralNamesMock() {
+        return {
+          items: []
+        };
+      });
     });
 
     it("should successfully re-enroll and return PKCS7 response", async () => {
@@ -434,16 +442,20 @@ describe("CertificateEstV3Service", () => {
     it("should throw error when subjects do not match", async () => {
       const { Pkcs10CertificateRequest, X509Certificate } = await import("@peculiar/x509");
 
-      (Pkcs10CertificateRequest as any).mockImplementation(() => ({
-        subject: "CN=different.example.com",
-        extensions: []
-      }));
+      (Pkcs10CertificateRequest as any).mockImplementation(function Pkcs10CertificateRequestMock() {
+        return {
+          subject: "CN=different.example.com",
+          extensions: []
+        };
+      });
 
-      (X509Certificate as any).mockImplementation(() => ({
-        subject: "CN=test.example.com",
-        extensions: [],
-        rawData: new ArrayBuffer(0)
-      }));
+      (X509Certificate as any).mockImplementation(function X509CertificateMock() {
+        return {
+          subject: "CN=test.example.com",
+          extensions: [],
+          rawData: new ArrayBuffer(0)
+        };
+      });
 
       await expect(
         service.simpleReenrollByProfile({
@@ -456,10 +468,12 @@ describe("CertificateEstV3Service", () => {
 
     it("records a renew failure when the CSR subject doesn't match the client certificate", async () => {
       const { Pkcs10CertificateRequest } = await import("@peculiar/x509");
-      (Pkcs10CertificateRequest as any).mockImplementation(() => ({
-        subject: "CN=different.example.com",
-        extensions: []
-      }));
+      (Pkcs10CertificateRequest as any).mockImplementation(function Pkcs10CertificateRequestMock() {
+        return {
+          subject: "CN=different.example.com",
+          extensions: []
+        };
+      });
       mockCertificateDAL.findOne.mockResolvedValue({ id: "cert-old", status: CertStatus.ACTIVE });
 
       await expect(

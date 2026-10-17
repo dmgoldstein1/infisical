@@ -1,0 +1,303 @@
+# syntax=docker/dockerfile:1.7
+#
+# Distroless standalone image (frontend + backend + Go sidecar).
+#
+# The runtime stage is a GoogleContainerTools/distroless image: no shell, no package
+# manager, no userland beyond Node.js and the shared libraries the app dlopens/spawns.
+# Every stage that needs a shell or an apt database runs earlier, and only its output
+# is copied forward.
+#
+# Techniques applied (per https://github.com/GoogleContainerTools/distroless):
+#   1. Multi-stage build. Frontend, backend, Go sidecar, Oracle client and PQC OpenSSL
+#      are each built in a dedicated stage; the runtime is assembled from their artifacts.
+#   2. A Debian `trixie-slim` payload stage installs the non-Node runtime bits (git, the
+#      infisical CLI, smbclient/rpcclient, unixODBC+FreeTDS, Oracle's libaio) and stages
+#      them into a self-contained /rootfs the final stage COPYs in. The whole multiarch
+#      library directory travels because several dependencies resolve at runtime (dlopen'd
+#      ODBC drivers, exec'd git/smb helpers) where an `ldd` closure cannot see them.
+#   3. Native modules and the CGO Go sidecar are compiled against the same Debian release
+#      (trixie) as the distroless runtime, so the glibc/libstdc++ ABI matches.
+#   4. Runs as the distroless unprivileged user (uid/gid 65532).
+#   5. `CMD` is a JSON vector handed straight to the distroless `node` entrypoint; there is
+#      no shell to run standalone-entrypoint.sh, so it is intentionally not shipped.
+#
+# The base image is pinned by digest. Verify it before trusting a build with:
+#   cosign verify gcr.io/distroless/nodejs26-debian13 \
+#     --certificate-oidc-issuer https://accounts.google.com \
+#     --certificate-identity keyless@distroless.iam.gserviceaccount.com
+#
+# Known behavioural differences from Dockerfile.standalone-infisical:
+#   * No interactive shell. `docker exec -it <container> sh` no longer works; run a binary
+#     directly instead (e.g. `docker exec <container> infisical ...`). Shell-form probe
+#     strings (`HEALTHCHECK`/`CMD-SHELL`, a compose `command:` string) cannot run either, so
+#     keep them in exec form.
+#   * No `npm`. The npm-script entry points are gone: the old `npm start` CMD is
+#     replaced by the exec-form CMD below, and `npm run assets:export` (the CDN caching guide)
+#     cannot run inside this image. Migrations still apply, since the server runs them on boot.
+#   * `update-ca-certificates` is gone (it is a shell script). The shell-free entrypoint
+#     (distroless-entrypoint.mjs) merges certificates mounted under /usr/local/share/ca-certificates
+#     (or EXTRA_CA_CERT_DIR) into a copy and exports NODE_EXTRA_CA_CERTS / SSL_CERT_FILE /
+#     GIT_SSL_CAINFO, so custom CAs are still honoured even though uid 65532 cannot rewrite the
+#     root-owned system bundle. With no mounted certs this is a no-op, and a read-only /tmp
+#     simply skips the merge.
+#   * The runtime takes libc/libssl/etc. from the freshly updated `debian:trixie-slim`
+#     payload stage copied on top of the distroless base, rather than from the base image's
+#     `apt-get --only-upgrade` list. Keep the distroless digest current.
+
+ARG NODE_IMAGE=node:26.10.0-trixie-slim
+ARG GOLANG_IMAGE=golang:1.26-trixie
+ARG INFISICAL_CLI_VERSION=0.43.136
+# Pinned by digest for a reproducible, signature-verifiable runtime.
+ARG DISTROLESS_NODE=gcr.io/distroless/nodejs26-debian13:nonroot@sha256:044d090d0c3ccfd30722126ebe46704885698970c8a303419dc0d704d628f0da
+
+################################################################################
+# FRONTEND
+################################################################################
+FROM ${NODE_IMAGE} AS frontend-dependencies
+WORKDIR /app
+COPY frontend/package*.json ./
+RUN npm ci --ignore-scripts
+
+FROM ${NODE_IMAGE} AS frontend-builder
+WORKDIR /app
+COPY --from=frontend-dependencies /app/node_modules ./node_modules
+COPY /frontend .
+ENV NODE_ENV=production
+ARG POSTHOG_HOST
+ENV VITE_POSTHOG_HOST=$POSTHOG_HOST
+ARG POSTHOG_API_KEY
+ENV VITE_POSTHOG_API_KEY=$POSTHOG_API_KEY
+ARG INTERCOM_ID
+ENV VITE_INTERCOM_ID=$INTERCOM_ID
+ARG INFISICAL_PLATFORM_VERSION
+ENV INFISICAL_PLATFORM_VERSION=$INFISICAL_PLATFORM_VERSION
+ENV VITE_INFISICAL_PLATFORM_VERSION=$INFISICAL_PLATFORM_VERSION
+ENV NODE_OPTIONS="--max-old-space-size=8192"
+RUN npm run build
+
+################################################################################
+# GO SIDECAR (CGO=1 → dynamically linked against trixie glibc)
+################################################################################
+FROM ${GOLANG_IMAGE} AS go-builder
+WORKDIR /app
+COPY backend-go/go.mod backend-go/go.sum ./
+RUN go mod download
+COPY backend-go/ .
+RUN CGO_ENABLED=1 GOOS=linux go build -ldflags="-s -w" -o /go-sidecar ./cmd/infisical/main.go
+
+################################################################################
+# ORACLE INSTANT CLIENT (parallel stage)
+################################################################################
+FROM debian:trixie-slim AS oracle
+RUN apt-get update && apt-get install -y --no-install-recommends unzip wget ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN ARCH=$(dpkg --print-architecture) && \
+    if [ "$ARCH" = "amd64" ]; then \
+        ORACLE_ZIP="instantclient-basic-linux.x64-23.26.0.0.0.zip" && \
+        EXPECTED_SHA="d6c79cbcf0ff209363e779855c690d4fc730aed847e9198a2c439bcf34760af5"; \
+    elif [ "$ARCH" = "arm64" ]; then \
+        ORACLE_ZIP="instantclient-basic-linux.arm64-23.26.0.0.0.zip" && \
+        EXPECTED_SHA="9c9a32051e97f087016fb334b7ad5c0aea8511ca8363afd8e0dc6ec4fc515c32"; \
+    fi && \
+    ORACLE_URL="https://download.oracle.com/otn_software/linux/instantclient/2326000/${ORACLE_ZIP}" && \
+    wget -q "$ORACLE_URL" && \
+    echo "$EXPECTED_SHA  $ORACLE_ZIP" | sha256sum -c - && \
+    mkdir -p /opt/oracle && \
+    unzip "$ORACLE_ZIP" -d /opt/oracle && \
+    rm "$ORACLE_ZIP"
+
+################################################################################
+# PQC OPENSSL 3.5.6 (ML-DSA / SLH-DSA) — built, then consumed as a self-contained prefix
+################################################################################
+FROM ${NODE_IMAGE} AS openssl-pqc-builder
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential perl wget ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+WORKDIR /tmp/openssl-build
+RUN wget -q https://github.com/openssl/openssl/releases/download/openssl-3.5.6/openssl-3.5.6.tar.gz \
+    && echo "deae7c80cba99c4b4f940ecadb3c3338b13cb77418409238e57d7f31f2a3b736  openssl-3.5.6.tar.gz" | sha256sum -c - \
+    && tar -xf openssl-3.5.6.tar.gz \
+    && cd openssl-3.5.6 \
+    && ./Configure --prefix=/opt/openssl-pqc --openssldir=/opt/openssl-pqc/ssl no-docs \
+    && make -j"$(nproc)" \
+    && make install_sw \
+    && cd / \
+    && rm -rf /tmp/openssl-build
+
+################################################################################
+# BACKEND
+################################################################################
+FROM ${NODE_IMAGE} AS backend-build
+ENV ChrystokiConfigurationPath=/usr/safenet/lunaclient/
+WORKDIR /app
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3 make g++ unixodbc freetds-bin unixodbc-dev libc-dev freetds-dev \
+    && rm -rf /var/lib/apt/lists/*
+COPY backend/package*.json ./
+RUN npm ci
+COPY /backend .
+ENV NODE_OPTIONS="--max-old-space-size=8192"
+RUN npm run build
+
+# Bake in-app announcements + their images at build time so self-hosted / air-gapped
+# instances make no outbound Contentful calls at runtime. No-ops silently without the
+# secrets. Passed via BuildKit secrets so they never enter an image layer.
+RUN --mount=type=secret,id=contentful_space_id,required=false \
+    --mount=type=secret,id=contentful_delivery_token,required=false \
+    --mount=type=secret,id=contentful_environment,required=false \
+    CONTENTFUL_SPACE_ID="$(cat /run/secrets/contentful_space_id 2>/dev/null || true)" \
+    CONTENTFUL_DELIVERY_TOKEN="$(cat /run/secrets/contentful_delivery_token 2>/dev/null || true)" \
+    CONTENTFUL_ENVIRONMENT="$(cat /run/secrets/contentful_environment 2>/dev/null || true)" \
+    npm run bake:announcements
+
+# Production dependencies (parallel with backend-build)
+FROM ${NODE_IMAGE} AS backend-prod-deps
+WORKDIR /app
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3 make g++ unixodbc freetds-bin unixodbc-dev libc-dev freetds-dev \
+    && rm -rf /var/lib/apt/lists/*
+COPY backend/package*.json ./
+RUN npm ci --omit=dev
+
+# Assemble the backend tree the runtime consumes: dist + prod node_modules only.
+FROM ${NODE_IMAGE} AS backend-runtime
+WORKDIR /backend
+COPY --from=backend-build /app/dist ./dist
+COPY --from=backend-build /app/package.json ./package.json
+COPY --from=backend-prod-deps /app/node_modules ./node_modules
+
+################################################################################
+# RUNTIME PAYLOAD — Debian bits the distroless runtime needs, staged into /rootfs
+################################################################################
+FROM debian:trixie-slim AS runtime-payload
+ARG INFISICAL_CLI_VERSION
+ARG TARGETARCH
+
+# git            — secret-scanning (git repo scanning)
+# openssh-client — git-over-ssh
+# smbclient      — SMB dynamic secrets / rpcclient connectivity probe
+# unixodbc+freetds+tdsodbc — SAP ASE / ODBC dynamic secrets
+# libaio1t64     — Oracle Instant Client async I/O
+# ca-certificates— TLS trust for outbound calls
+# curl/wget      — image-external probes (ECS health check shells out to wget)
+# infisical CLI  — secret-scanning invokes `infisical`
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      ca-certificates \
+      git \
+      openssh-client \
+      smbclient \
+      unixodbc \
+      freetds-bin \
+      tdsodbc \
+      libaio1t64 \
+      curl \
+      wget \
+    && curl -1sLf 'https://artifacts-cli.infisical.com/setup.deb.sh' | bash \
+    && apt-get update && apt-get install -y --no-install-recommends "infisical=${INFISICAL_CLI_VERSION}" \
+    && rm -rf /var/lib/apt/lists/*
+
+# Debian multiarch tuple — BuildKit's TARGETARCH avoids needing dpkg-dev.
+RUN case "${TARGETARCH}" in \
+      amd64|"") GNU=x86_64-linux-gnu ;; \
+      arm64)    GNU=aarch64-linux-gnu ;; \
+      arm)      GNU=arm-linux-gnueabihf ;; \
+      *) echo "unsupported arch: ${TARGETARCH}" >&2; exit 1 ;; \
+    esac && echo "$GNU" > /tmp/gnu-triplet
+
+# FreeTDS ODBC driver registration (SAP ASE dynamic secrets)
+RUN printf "[FreeTDS]\nDescription=FreeTDS Driver\nDriver=/usr/lib/%s/odbc/libtdsodbc.so\nSetup=/usr/lib/%s/odbc/libtdsodbc.so\nFileUsage=1\n" \
+      "$(cat /tmp/gnu-triplet)" "$(cat /tmp/gnu-triplet)" \
+      > /etc/odbcinst.ini
+
+# Assemble a minimal, self-contained rootfs. No shells, executables beyond those listed,
+# or dpkg database travel in it.
+RUN set -eux; \
+    GNU="$(cat /tmp/gnu-triplet)"; \
+    mkdir -p /rootfs; \
+    cp -a --parents "/usr/lib/${GNU}" /rootfs; \
+    cp -a --parents /usr/lib/git-core /rootfs 2>/dev/null || true; \
+    cp -a --parents /usr/share/git-core /rootfs 2>/dev/null || true; \
+    cp -a --parents /usr/lib/samba /rootfs 2>/dev/null || true; \
+    cp -a --parents /usr/share/samba /rootfs 2>/dev/null || true; \
+    cp -a --parents /usr/lib/openssh /rootfs 2>/dev/null || true; \
+    cp -a --parents /usr/share/openssh /rootfs 2>/dev/null || true; \
+    for bin in git smbclient rpcclient infisical ssh ssh-keygen ssh-keyscan curl wget; do \
+      p="$(command -v "$bin")"; \
+      cp -a --parents "$p" /rootfs; \
+    done; \
+    cp -a --parents /etc/odbcinst.ini /rootfs; \
+    # Oracle Instant Client links against the versioned soname libaio.so.1
+    if [ -e "/usr/lib/${GNU}/libaio.so.1t64" ]; then \
+      ln -sf libaio.so.1t64 "/rootfs/usr/lib/${GNU}/libaio.so.1"; \
+    fi; \
+    # give the PQC OpenSSL prefix a stable home in the runtime
+    mkdir -p /rootfs/opt
+
+################################################################################
+# RUNTIME — distroless node, non-root, no shell
+################################################################################
+FROM ${DISTROLESS_NODE}
+
+ENV PORT=8080 \
+    HOST=0.0.0.0 \
+    HTTPS_ENABLED=false \
+    NODE_ENV=production \
+    STANDALONE_BUILD=true \
+    STANDALONE_MODE=true \
+    TELEMETRY_ENABLED=true \
+    NODE_OPTIONS="--max-old-space-size=2048" \
+    ChrystokiConfigurationPath=/usr/safenet/lunaclient/ \
+    PATH=/nodejs/bin:/usr/local/bin:/usr/bin:/bin \
+    LD_LIBRARY_PATH=/opt/oracle/instantclient_23_26
+
+# Debian runtime payload (libraries + specific binaries), no shell/dpkg.
+COPY --from=runtime-payload /rootfs/ /
+# Oracle Instant Client (license travels with the client per Oracle's FUTC terms).
+COPY --from=oracle /opt/oracle /opt/oracle
+# PQC OpenSSL, consumed as a self-contained prefix by lib/crypto/pqc.
+COPY --from=openssl-pqc-builder /opt/openssl-pqc /opt/openssl-pqc
+
+# Application: backend dist + prod node_modules, the Go sidecar, the built frontend.
+COPY --from=backend-runtime /backend /backend
+COPY --from=go-builder /go-sidecar /backend/go-sidecar
+COPY --from=frontend-builder /app/dist /backend/frontend-build
+
+ARG POSTHOG_API_KEY
+ENV POSTHOG_API_KEY=$POSTHOG_API_KEY
+ARG INTERCOM_ID
+ENV INTERCOM_ID=$INTERCOM_ID
+
+ARG INFISICAL_PLATFORM_VERSION
+ENV INFISICAL_PLATFORM_VERSION=$INFISICAL_PLATFORM_VERSION
+ARG DD_GIT_REPOSITORY_URL
+ENV DD_GIT_REPOSITORY_URL=$DD_GIT_REPOSITORY_URL
+ARG DD_GIT_COMMIT_SHA
+ENV DD_GIT_COMMIT_SHA=$DD_GIT_COMMIT_SHA
+
+LABEL org.opencontainers.image.title="Infisical" \
+      org.opencontainers.image.description="Open-source secret management platform (distroless runtime)" \
+      org.opencontainers.image.url="https://infisical.com" \
+      org.opencontainers.image.documentation="https://infisical.com/docs" \
+      org.opencontainers.image.source="https://github.com/Infisical/infisical" \
+      org.opencontainers.image.vendor="Infisical" \
+      org.opencontainers.image.licenses="MIT" \
+      org.opencontainers.image.base.name="gcr.io/distroless/nodejs26-debian13:nonroot" \
+      org.opencontainers.image.version="${INFISICAL_PLATFORM_VERSION}" \
+      org.opencontainers.image.revision="${DD_GIT_COMMIT_SHA}"
+
+WORKDIR /backend
+
+EXPOSE 8080
+EXPOSE 443
+
+# Run as the distroless unprivileged user (uid/gid 65532).
+USER 65532:65532
+
+# Shell-free replacement for standalone-entrypoint.sh (`update-ca-certificates` + exec node):
+# it merges any extra CA certs and then re-execs `node` with the CMD args. Exec-form only:
+# there is no shell to interpolate a string command.
+COPY distroless-entrypoint.mjs /usr/local/bin/distroless-entrypoint.mjs
+
+ENTRYPOINT ["/nodejs/bin/node", "/usr/local/bin/distroless-entrypoint.mjs"]
+CMD ["--enable-source-maps", "dist/main.mjs"]

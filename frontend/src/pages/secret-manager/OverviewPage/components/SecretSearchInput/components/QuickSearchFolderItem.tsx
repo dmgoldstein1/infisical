@@ -3,6 +3,7 @@ import { ChevronRightIcon, FolderIcon } from "lucide-react";
 
 import { TableCell, TableRow, Tooltip, TooltipContent, TooltipTrigger } from "@app/components/v3";
 import { TSecretFolder } from "@app/hooks/api/secretFolders/types";
+import type { SecretOverviewPageSearch } from "@app/pages/secret-manager/OverviewPage/overviewSearch";
 
 import { QuickSearchSelection } from "./quickSearchTypes";
 
@@ -21,7 +22,7 @@ export const QuickSearchFolderItem = ({ folder, envSlug, onClose, onSelectResult
   const handleNavigate = () => {
     onSelectResult({ search: "" });
     navigate({
-      search: (prev) => ({
+      search: (prev: SecretOverviewPageSearch) => ({
         ...prev,
         search: undefined,
         tags: undefined,

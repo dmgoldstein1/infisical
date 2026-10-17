@@ -37,7 +37,7 @@ import {
   useProjectPermission
 } from "@app/context";
 import { isValidEmail } from "@app/helpers/email";
-import { getProjectLabel, hidesProjects } from "@app/helpers/project";
+import { getProjectBaseURL, getProjectLabel, hidesProjects } from "@app/helpers/project";
 import { useScopeVariant } from "@app/hooks";
 import {
   useAddUserToWsNonE2EE,
@@ -75,7 +75,7 @@ export const AddMemberModal = ({ popUp, handlePopUpToggle }: Props) => {
   const { t } = useTranslation();
   const { currentOrg } = useOrganization();
   const { currentProject } = useProject();
-  const navigate = useNavigate({ from: "" });
+  const navigate = useNavigate();
   const { permission: orgPermission } = useOrgPermission();
   const { permission: projectPermission } = useProjectPermission();
   const requesterEmail = useSearch({
@@ -217,7 +217,12 @@ export const AddMemberModal = ({ popUp, handlePopUpToggle }: Props) => {
     handlePopUpToggle("addMember", false);
     if (requesterEmail) {
       navigate({
-        search: (prev) => ({ ...prev, requesterEmail: "" })
+        to: `${getProjectBaseURL(currentProject.type)}/access-management` as const,
+        search: (prev) => ({ ...prev, requesterEmail: "" }),
+        params: {
+          orgId: currentOrg.id,
+          projectId: currentProject.id
+        }
       });
     }
     reset();
@@ -258,7 +263,12 @@ export const AddMemberModal = ({ popUp, handlePopUpToggle }: Props) => {
       onOpenChange={(isOpen) => {
         if (!isOpen && requesterEmail)
           navigate({
-            search: (prev) => ({ ...prev, requesterEmail: "" })
+            to: `${getProjectBaseURL(currentProject.type)}/access-management` as const,
+            search: (prev) => ({ ...prev, requesterEmail: "" }),
+            params: {
+              orgId: currentOrg.id,
+              projectId: currentProject.id
+            }
           });
         handlePopUpToggle("addMember", isOpen);
       }}

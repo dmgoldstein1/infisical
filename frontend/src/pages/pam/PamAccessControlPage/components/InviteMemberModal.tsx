@@ -38,7 +38,7 @@ export const InviteMemberModal = ({ isOpen, onOpenChange }: Props) => {
   const { currentProject } = useProject();
   const { currentOrg } = useOrganization();
   const { mutate: addUser, isPending } = useAddPamProductUserMember();
-  const navigate = useNavigate({ from: "" });
+  const navigate = useNavigate();
 
   const requesterEmail = useSearch({
     strict: false,
@@ -83,7 +83,11 @@ export const InviteMemberModal = ({ isOpen, onOpenChange }: Props) => {
 
   const clearRequesterEmail = () => {
     if (requesterEmail) {
-      navigate({ search: (prev) => ({ ...prev, requesterEmail: "" }) });
+      navigate({
+        to: "/organizations/$orgId/pam/access-management",
+        search: (prev) => ({ ...prev, requesterEmail: "" }),
+        params: { orgId: currentOrg.id }
+      });
     }
   };
 

@@ -1,0 +1,235 @@
+# syntax=docker/dockerfile:1.7
+#
+# Distroless backend image.
+#
+# Build from the repository root (the shared distroless-entrypoint.mjs lives there):
+#   docker build -f backend/Dockerfile.distroless -t infisical-backend-distroless .
+#
+# The runtime stage is a GoogleContainerTools/distroless image: it has no shell, no
+# package manager and no userland beyond the Node.js runtime and the shared libraries
+# the app dlopens/spawns. Everything that needs a shell or an apt database runs in an
+# earlier stage and only its *output* is copied forward.
+#
+# Techniques applied (per https://github.com/GoogleContainerTools/distroless):
+#   1. Multi-stage build. `build` compiles the TypeScript, `prod-deps` resolves the
+#      production dependency tree, `oracle`/`runtime-payload` fetch the non-Node runtime
+#      payload, and the final stage assembles the image from their artifacts only.
+#   2. A Debian `trixie-slim` payload stage installs the Debian packages the app shells
+#      out to (git, smbclient/rpcclient, unixODBC + FreeTDS, the Infisical CLI). We copy
+#      the resulting multiarch library tree plus the specific binaries into
+#      the distroless root rather than running apt there. A pure `ldd` closure is not
+#      enough here: the ODBC drivers are `dlopen`ed by name and git/samba exec helpers
+#      from `git-core`/`samba`, none of which ldd sees.
+#   3. Native addons are compiled on the same Debian release (trixie) as the distroless
+#      runtime, so the glibc / libstdc++ ABI matches. Node's NODE_MODULE_VERSION is stable
+#      within a major, so 26.10 build -> 26.12 runtime is load-bearing-compatible.
+#   4. Runs as the distroless `nonroot` user (uid/gid 65532), never root.
+#   3b. No shell means no shell-form entrypoint and no `update-ca-certificates` hook:
+#      `CMD` is a JSON vector handed straight to the distroless `node` entrypoint.
+#
+# The base image is pinned by digest. Verify it before trusting a build with:
+#   cosign verify gcr.io/distroless/nodejs26-debian13 \
+#     --certificate-oidc-issuer https://accounts.google.com \
+#     --certificate-identity keyless@distroless.iam.gserviceaccount.com
+#
+# Known behavioural differences from backend/Dockerfile (node:26-slim runtime):
+#   * No interactive shell. `docker exec -it <container> sh` no longer works; run a binary
+#     directly instead (e.g. `docker exec <container> infisical ...`). Shell-form probe
+#     strings (`HEALTHCHECK`/`CMD-SHELL`, a compose `command:` string) cannot run either, so
+#     keep them in exec form. This image defines no HEALTHCHECK.
+#   * No `npm`. The npm-script entry points are gone: `npm start` is replaced by the exec-form
+#     CMD below, and utilities such as `npm run assets:export` (the CDN caching guide) cannot
+#     run inside this image. Migrations still apply, since the server runs them on boot.
+#   * `update-ca-certificates` is gone (it is a shell script). The shell-free entrypoint
+#     (distroless-entrypoint.mjs) merges certificates mounted under /usr/local/share/ca-certificates
+#     (or EXTRA_CA_CERT_DIR) into a copy and exports NODE_EXTRA_CA_CERTS / SSL_CERT_FILE /
+#     GIT_SSL_CAINFO, so custom CAs are still honoured even though uid 65532 cannot rewrite the
+#     root-owned system bundle. With no mounted certs this is a no-op, and a read-only /tmp
+#     simply skips the merge.
+#   * Unlike backend/Dockerfile (whose runtime stage installs nothing), this image carries
+#     the runtime tools the app actually spawns/dlopens at runtime (git, the infisical CLI,
+#     smbclient/rpcclient, unixODBC+FreeTDS, Oracle Instant Client + libaio). Without them
+#     secret-scanning, SMB and Oracle/ODBC dynamic secrets fail on the backend image.
+
+ARG INFISICAL_CLI_VERSION=0.43.136
+ARG NODE_IMAGE=node:26.10.0-trixie-slim
+# Pinned by digest for a reproducible, signature-verifiable runtime.
+ARG DISTROLESS_NODE=gcr.io/distroless/nodejs26-debian13:nonroot@sha256:044d090d0c3ccfd30722126ebe46704885698970c8a303419dc0d704d628f0da
+
+################################################################################
+# 1. build — compile TypeScript to dist/**/*.mjs
+################################################################################
+FROM ${NODE_IMAGE} AS build
+
+WORKDIR /app
+
+# Required for pkcs11js and TDS driver (SAP ASE dynamic secrets)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3 \
+    make \
+    g++ \
+    openssh-client \
+    openssl \
+    unixodbc \
+    freetds-bin \
+    freetds-dev \
+    unixodbc-dev \
+    libc-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# Build context is the repo root (the shared distroless-entrypoint.mjs lives there), so the
+# backend sources are addressed under backend/.
+COPY backend/package*.json ./
+RUN npm ci
+
+COPY backend/ .
+RUN npm run build
+
+################################################################################
+# 2. prod-deps — production dependency tree (native modules compiled here)
+################################################################################
+FROM ${NODE_IMAGE} AS prod-deps
+
+WORKDIR /app
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3 \
+    make \
+    g++ \
+    unixodbc \
+    freetds-bin \
+    freetds-dev \
+    unixodbc-dev \
+    libc-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY backend/package*.json ./
+RUN npm ci --omit=dev
+
+################################################################################
+# 3. oracle — Oracle Instant Client (parallel stage)
+################################################################################
+FROM debian:trixie-slim AS oracle
+
+RUN apt-get update && apt-get install -y --no-install-recommends unzip wget ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN ARCH=$(dpkg --print-architecture) && \
+    if [ "$ARCH" = "amd64" ]; then \
+        ORACLE_ZIP="instantclient-basic-linux.x64-23.26.0.0.0.zip" && \
+        EXPECTED_SHA="d6c79cbcf0ff209363e779855c690d4fc730aed847e9198a2c439bcf34760af5"; \
+    elif [ "$ARCH" = "arm64" ]; then \
+        ORACLE_ZIP="instantclient-basic-linux.arm64-23.26.0.0.0.zip" && \
+        EXPECTED_SHA="9c9a32051e97f087016fb334b7ad5c0aea8511ca8363afd8e0dc6ec4fc515c32"; \
+    fi && \
+    ORACLE_URL="https://download.oracle.com/otn_software/linux/instantclient/2326000/${ORACLE_ZIP}" && \
+    wget -q "$ORACLE_URL" && \
+    echo "$EXPECTED_SHA  $ORACLE_ZIP" | sha256sum -c - && \
+    mkdir -p /opt/oracle && \
+    unzip "$ORACLE_ZIP" -d /opt/oracle && \
+    rm "$ORACLE_ZIP"
+
+################################################################################
+# 4. runtime-payload — the Debian bits the distroless runtime needs, staged into
+#    a self-contained /rootfs so the final COPY is architecture-agnostic.
+################################################################################
+FROM debian:trixie-slim AS runtime-payload
+
+ARG INFISICAL_CLI_VERSION
+ARG TARGETARCH
+
+# Runtime libraries/binaries the app spawns or dlopens at runtime:
+#   git            — secret-scanning (git repo scanning)
+#   smbclient      — SMB dynamic secrets / rpcclient connectivity probe
+#   unixodbc+freetds — SAP ASE / MSSQL(ODBC) dynamic secrets
+#   libaio1t64     — Oracle Instant Client async I/O
+#   ca-certificates— TLS trust for outbound calls
+#   infisical CLI  — secret-scanning invokes `infisical`
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      ca-certificates \
+      git \
+      smbclient \
+      unixodbc \
+      freetds-bin \
+      tdsodbc \
+      libaio1t64 \
+      curl \
+      wget \
+    && curl -1sLf 'https://artifacts-cli.infisical.com/setup.deb.sh' | bash \
+    && apt-get update && apt-get install -y --no-install-recommends "infisical=${INFISICAL_CLI_VERSION}" \
+    && rm -rf /var/lib/apt/lists/*
+
+# Debian multiarch tuple — BuildKit's TARGETARCH avoids needing dpkg-dev.
+RUN case "${TARGETARCH}" in \
+      amd64|"") GNU=x86_64-linux-gnu ;; \
+      arm64)    GNU=aarch64-linux-gnu ;; \
+      arm)      GNU=arm-linux-gnueabihf ;; \
+      *) echo "unsupported arch: ${TARGETARCH}" >&2; exit 1 ;; \
+    esac && echo "$GNU" > /tmp/gnu-triplet
+
+# FreeTDS ODBC driver registration (SAP ASE dynamic secrets)
+RUN printf "[FreeTDS]\nDescription=FreeTDS Driver\nDriver=/usr/lib/%s/odbc/libtdsodbc.so\nSetup=/usr/lib/%s/odbc/libtdsodbc.so\nFileUsage=1\n" \
+      "$(cat /tmp/gnu-triplet)" "$(cat /tmp/gnu-triplet)" \
+      > /etc/odbcinst.ini
+
+# Assemble a minimal, self-contained rootfs to copy into the distroless runtime.
+# We copy the whole multiarch library directory because several dependencies are
+# resolved at runtime (dlopen'd ODBC drivers, exec'd git/smb helpers) and an `ldd`
+# closure cannot see them. No executables, shells or dpkg database travel in it.
+RUN set -eux; \
+    GNU="$(cat /tmp/gnu-triplet)"; \
+    mkdir -p /rootfs; \
+    cp -a --parents "/usr/lib/${GNU}" /rootfs; \
+    cp -a --parents /usr/lib/git-core /rootfs 2>/dev/null || true; \
+    cp -a --parents /usr/share/git-core /rootfs 2>/dev/null || true; \
+    cp -a --parents /usr/lib/samba /rootfs 2>/dev/null || true; \
+    cp -a --parents /usr/share/samba /rootfs 2>/dev/null || true; \
+    for bin in git smbclient rpcclient infisical curl wget; do \
+      p="$(command -v "$bin")"; \
+      cp -a --parents "$p" /rootfs; \
+    done; \
+    cp -a --parents /etc/odbcinst.ini /rootfs; \
+    # Oracle Instant Client links against the versioned soname libaio.so.1
+    if [ -e "/usr/lib/${GNU}/libaio.so.1t64" ]; then \
+      ln -sf libaio.so.1t64 "/rootfs/usr/lib/${GNU}/libaio.so.1"; \
+    fi
+
+################################################################################
+# 5. runtime — distroless node, non-root, no shell
+################################################################################
+FROM ${DISTROLESS_NODE} AS runtime
+
+ENV NODE_ENV=production \
+    HOST=0.0.0.0 \
+    PORT=4000 \
+    PATH=/nodejs/bin:/usr/local/bin:/usr/bin:/bin \
+    LD_LIBRARY_PATH=/opt/oracle/instantclient_23_26
+
+WORKDIR /app
+
+# Debian runtime payload (libraries + the specific binaries), no shell/dpkg.
+COPY --from=runtime-payload /rootfs/ /
+# Oracle Instant Client (license travels with the client per Oracle's FUTC terms).
+COPY --from=oracle /opt/oracle /opt/oracle
+
+# Application.
+COPY --from=prod-deps /app/node_modules ./node_modules
+COPY --from=build /app/dist ./dist
+COPY --from=build /app/package.json ./package.json
+
+# OCI metadata
+LABEL org.opencontainers.image.title="infisical-backend" \
+      org.opencontainers.image.description="Infisical API server (distroless runtime)" \
+      org.opencontainers.image.base.name="gcr.io/distroless/nodejs26-debian13:nonroot"
+
+# Run as the distroless unprivileged user (uid/gid 65532).
+USER 65532:65532
+
+EXPOSE 4000
+
+# Shell-free entrypoint: merges any extra CA certs (see distroless-entrypoint.mjs) and then
+# re-execs `node` with the CMD args. Exec-form only: there is no shell to interpolate a string.
+COPY distroless-entrypoint.mjs /usr/local/bin/distroless-entrypoint.mjs
+
+ENTRYPOINT ["/nodejs/bin/node", "/usr/local/bin/distroless-entrypoint.mjs"]
+CMD ["--enable-source-maps", "dist/main.mjs"]

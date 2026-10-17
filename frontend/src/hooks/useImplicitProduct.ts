@@ -9,7 +9,7 @@ import { ProjectType } from "@app/hooks/api/projects/types";
 // anything gated on it mounts or unmounts out of step with the project it needs.
 export const useImplicitProduct = (): ProjectType | null =>
   useRouterState({
-    select: (state) => {
+    select: (state): ProjectType | null => {
       for (let i = state.matches.length - 1; i >= 0; i -= 1) {
         const { implicitProductType } = state.matches[i].context;
         if (implicitProductType) return implicitProductType;

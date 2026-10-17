@@ -1,3 +1,6 @@
+> [!NOTE]
+> **Vendored copy.** This directory mirrors [`Infisical/cli`](https://github.com/Infisical/cli) at commit [`407a676`](https://github.com/Infisical/cli/commit/407a676c175377818785d06b0201db850d5e7cb3). It is included on this branch so the CLI ships alongside the monorepo; the upstream README below is unchanged. `.git` and `node_modules` are excluded.
+
 <div align="center">
   <img width="300" src="https://raw.githubusercontent.com/Infisical/infisical/main/img/logoname-white.svg#gh-dark-mode-only" alt="infisical">
   <img width="300" src="https://raw.githubusercontent.com/Infisical/infisical/main/img/logoname-black.svg#gh-light-mode-only" alt="infisical">

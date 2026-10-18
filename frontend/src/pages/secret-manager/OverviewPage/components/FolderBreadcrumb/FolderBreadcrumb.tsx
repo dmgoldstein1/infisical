@@ -308,7 +308,10 @@ export function FolderBreadcrumb({ secretPath = "" }: Props) {
                 }
                 from="/organizations/$orgId/projects/secret-management/$projectId/overview"
                 to="."
-                search={(prev: SecretOverviewPageSearch) => ({ ...prev, secretPath: getCrumbPath(0) })}
+                search={(prev: SecretOverviewPageSearch) => ({
+                  ...prev,
+                  secretPath: getCrumbPath(0)
+                })}
                 aria-label="Root folder"
                 title="/"
               >
@@ -347,7 +350,10 @@ export function FolderBreadcrumb({ secretPath = "" }: Props) {
                       }
                       from="/organizations/$orgId/projects/secret-management/$projectId/overview"
                       to="."
-                      search={(prev: SecretOverviewPageSearch) => ({ ...prev, secretPath: getCrumbPath(index + 1) })}
+                      search={(prev: SecretOverviewPageSearch) => ({
+                        ...prev,
+                        secretPath: getCrumbPath(index + 1)
+                      })}
                     >
                       {path}
                     </Link>

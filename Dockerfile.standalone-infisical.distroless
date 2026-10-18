@@ -36,10 +36,10 @@
 #     cannot run inside this image. Migrations still apply, since the server runs them on boot.
 #   * `update-ca-certificates` is gone (it is a shell script). The shell-free entrypoint
 #     (distroless-entrypoint.mjs) merges certificates mounted under /usr/local/share/ca-certificates
-#     (or EXTRA_CA_CERT_DIR) into a copy and exports NODE_EXTRA_CA_CERTS / SSL_CERT_FILE /
-#     GIT_SSL_CAINFO, so custom CAs are still honoured even though uid 65532 cannot rewrite the
-#     root-owned system bundle. With no mounted certs this is a no-op, and a read-only /tmp
-#     simply skips the merge.
+#     (or EXTRA_CA_CERT_DIR) into a copy and publishes the merged bundle through
+#     NODE_EXTRA_CA_CERTS, SSL_CERT_FILE and GIT_SSL_CAINFO, so custom CAs are still honoured
+#     even though uid 65532 cannot rewrite the root-owned system bundle. With no mounted certs
+#     this is a no-op, and a read-only /tmp simply skips the merge.
 #   * The runtime takes libc/libssl/etc. from the freshly updated `debian:trixie-slim`
 #     payload stage copied on top of the distroless base, rather than from the base image's
 #     `apt-get --only-upgrade` list. Keep the distroless digest current.

@@ -16,6 +16,10 @@
 // Ryuk must stay disabled here so the stack survives this test process;
 // TestTeardownCLIFixtures removes it afterwards. Nothing in this package is
 // an enterprise feature, so no license key is required.
+//
+// The backend keeps the harness's random host port: the ./test snapshots mask
+// the instance domain (see FilterRequestID), so a fixed port would only buy a
+// bind conflict on occupied machines.
 package provision
 
 import (
@@ -31,18 +35,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/compose-spec/compose-go/v2/types"
 	"github.com/stretchr/testify/require"
 
 	"github.com/infisical/cli/e2e-tests/packages/client"
 	"github.com/infisical/cli/e2e-tests/packages/infisical"
 	"github.com/infisical/cli/e2e-tests/util"
 )
-
-// fixedBackendPort pins the backend's host port so INFISICAL_DOMAIN (and
-// therefore every cupaloy snapshot downstream) is deterministic across runs.
-// A random mapped port would bake a different URL into the snapshots each run.
-const fixedBackendPort = "8080"
 
 const (
 	envSlug        = "dev"
@@ -65,28 +63,20 @@ var fixtureSecrets = []struct {
 	{key: "FOLDER-SECRET-1", value: "folder-value-1", environment: envSlug, secretPath: "/" + folderName},
 	{key: "STAGING-SECRET-1", value: "staging-value-1", environment: stagingEnvSlug, secretPath: "/"},
 	{key: "STAGING-SECRET-2", value: "staging-value-2", environment: stagingEnvSlug, secretPath: "/"},
-)
+}
 
-// newFixtureStack mirrors util.NewInfisicalService's default (non-ACME) stack
-// and additionally pins the backend to a fixed host port. The definition must
-// stay byte-identical between the provision and teardown tests: the compose
-// project name is a hash of it, and the teardown relies on that to find the
-// running stack again.
+// newFixtureStack mirrors util.NewInfisicalService's default (non-ACME) stack.
+// The definition must stay byte-identical between the provision and teardown
+// tests: the compose project name is a hash of it, and the teardown relies on
+// that to find the running stack again.
 func newFixtureStack() *util.InfisicalService {
 	backendOpts := infisical.BackendOptionsFromEnv()
 	backendOpts.Dockerfile = "Dockerfile.dev"
-	svc := &util.InfisicalService{Stack: infisical.NewStack(
+	return &util.InfisicalService{Stack: infisical.NewStack(
 		infisical.WithDbService(),
 		infisical.WithRedisService(),
 		infisical.WithBackendService(backendOpts),
 	)}
-	backendSvc := svc.Stack.Project.Services["backend"]
-	backendSvc.Ports = []types.ServicePortConfig{
-		{Published: fixedBackendPort, Target: 4000},
-		{Target: 9229},
-	}
-	svc.Stack.Project.Services["backend"] = backendSvc
-	return svc
 }
 
 // postJSON performs an authenticated raw API call for endpoints the generated
@@ -207,11 +197,16 @@ func TestProvisionCLIFixtures(t *testing.T) {
 	// 6. Legacy service token, created exactly the way the UI does
 	// (empty key envelope; the v4 reads used by the CLI are server-decrypted).
 	// The CLI requires a 4-segment token, so a random 4th segment is appended;
-	// the server only verifies the first three.
+	// the server only verifies the first three. Scopes use /** globs: a bare
+	// "/" scope only matches the root path, which would hide the folder and
+	// imported fixtures from the recursive/import assertions.
 	tokenResp := postJSON(t, ctx, apiURL, provisioned.Token, "/api/v2/service-token/", map[string]any{
-		"name":         "cli-ci-tests",
-		"workspaceId":  projectID,
-		"scopes":       []map[string]any{{"environment": envSlug, "secretPath": "/"}},
+		"name":        "cli-ci-tests",
+		"workspaceId": projectID,
+		"scopes": []map[string]any{
+			{"environment": envSlug, "secretPath": "/**"},
+			{"environment": stagingEnvSlug, "secretPath": "/**"},
+		},
 		"encryptedKey": "",
 		"iv":           "",
 		"tag":          "",
@@ -222,17 +217,18 @@ func TestProvisionCLIFixtures(t *testing.T) {
 	require.True(t, ok && baseToken != "", "service token response missing serviceToken: %v", tokenResp)
 	serviceToken := baseToken + "." + randomHex(t, 16)
 
-	// 7. Export everything the CLI ./test suite consumes.
-	domain := fmt.Sprintf("http://localhost:%s", fixedBackendPort)
+	// 7. Export everything the CLI ./test suite consumes. The domain carries
+	// the harness's random mapped port; the suite masks it in snapshots.
+	domain := apiURL
 	envOut := map[string]string{
-		"INFISICAL_DOMAIN":               domain,
-		"CLI_TESTS_UA_CLIENT_ID":         *identity.UniversalAuthClientId,
-		"CLI_TESTS_UA_CLIENT_SECRET":     *identity.UniversalAuthClientSecret,
-		"CLI_TESTS_SERVICE_TOKEN":        serviceToken,
-		"CLI_TESTS_PROJECT_ID":           projectID,
-		"CLI_TESTS_ENV_SLUG":             envSlug,
-		"CLI_TESTS_USER_EMAIL":           provisioned.Email,
-		"CLI_TESTS_USER_PASSWORD":        provisioned.Password,
+		"INFISICAL_DOMAIN":           domain,
+		"CLI_TESTS_UA_CLIENT_ID":     *identity.UniversalAuthClientId,
+		"CLI_TESTS_UA_CLIENT_SECRET": *identity.UniversalAuthClientSecret,
+		"CLI_TESTS_SERVICE_TOKEN":    serviceToken,
+		"CLI_TESTS_PROJECT_ID":       projectID,
+		"CLI_TESTS_ENV_SLUG":         envSlug,
+		"CLI_TESTS_USER_EMAIL":       provisioned.Email,
+		"CLI_TESTS_USER_PASSWORD":    provisioned.Password,
 	}
 	var lines []string
 	for k, v := range envOut {

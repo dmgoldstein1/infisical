@@ -86,6 +86,13 @@ func FilterRequestID(input string) string {
 		input = strings.ReplaceAll(input, creds.ProjectID, "<project-id>")
 	}
 
+	// The harness publishes the backend on a random host port per run, so the
+	// instance domain is per-run too. A wrong-host bug cannot hide behind
+	// this: requests to the wrong host fail outright instead of snapshotting.
+	if domain := os.Getenv("INFISICAL_DOMAIN"); domain != "" {
+		input = strings.ReplaceAll(input, strings.TrimRight(domain, "/"), "<instance>")
+	}
+
 	start := strings.Index(input, "{")
 	end := strings.LastIndex(input, "}") + 1
 

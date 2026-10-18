@@ -2,6 +2,7 @@ package tests
 
 import (
 	"log"
+	"os"
 	"os/exec"
 	"strings"
 	"testing"
@@ -75,6 +76,11 @@ func UserLoginCmd() {
 
 	stepChan := make(chan int, 10)
 
+	// When the instance domain is preset via environment (self-hosted CI),
+	// the CLI skips the instance picker, so the "Infisical Cloud" prompt
+	// never appears and Email is the first prompt.
+	domainPreset := os.Getenv("INFISICAL_DOMAIN") != "" || os.Getenv("INFISICAL_API_URL") != ""
+
 	go func() {
 		buf := make([]byte, 1024)
 		step := -1
@@ -86,7 +92,11 @@ func UserLoginCmd() {
 					step += 1
 					stepChan <- step
 				} else if strings.Contains(terminalOut, "Email") && step < 1 {
-					step += 1
+					if domainPreset && step < 0 {
+						step = 1
+					} else {
+						step += 1
+					}
 					stepChan <- step
 				} else if strings.Contains(terminalOut, "Password") && step < 2 {
 					step += 1

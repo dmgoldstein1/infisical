@@ -79,6 +79,13 @@ func FilterRequestID(input string) string {
 	input = reqIDPattern.ReplaceAllString(input, "[reqId=<unknown-value>]")
 	input = requestIdPattern.ReplaceAllString(input, "Request ID: <unknown-value>")
 
+	// The throwaway backend mints a fresh project ID on every run, so it can
+	// never appear literally in a snapshot. Mask it the same way. Secret
+	// names and values are deliberately NOT masked: they are the assertions.
+	if creds.ProjectID != "" {
+		input = strings.ReplaceAll(input, creds.ProjectID, "<project-id>")
+	}
+
 	start := strings.Index(input, "{")
 	end := strings.LastIndex(input, "}") + 1
 

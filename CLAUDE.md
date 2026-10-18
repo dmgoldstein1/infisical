@@ -9,6 +9,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - `cd backend && npm run generate:schema` — regenerate Zod types from DB after migration changes
 - `make test-api-unit` / `make test-api-e2e` — run the Node backend suites in the FIPS image CI uses, against a throwaway database. Narrow with `SPEC=<pattern>`. See `backend/CLAUDE.md` for why running `npm run test:e2e` directly can destroy your dev data.
 - `cd backend-go && make test` — run Go integration tests
+- `cd infisical-cli/e2e && go test -run TestProvisionCLIFixtures ./provision/` (with `TESTCONTAINERS_RYUK_DISABLED=true`, `INFISICAL_BACKEND_DIR` set) — boot a throwaway backend and provision the fixtures the self-hosted CLI suite (`infisical-cli/test`) asserts. CI runs this via `run-cli-selfhosted-tests.yml`; no Cloud account or license key needed.
 
 Both backend and frontend use `@app/*` as path alias to `./src/*`.
 

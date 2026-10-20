@@ -112,7 +112,7 @@
     "dompurify": "^3.2.4",
     "file-saver": "^2.0.5",
     "i18next": "^24.1.0",
-    "i18next-http-backend": "^3.0.1",
+    "i18next-http-backend": "^4.0.2",
     "jwt-decode": "^4.0.0",
     "lexical": "^0.29.0",
     "lucide-react": "^0.544.0",
@@ -187,6 +187,6 @@
     "vite-plugin-node-polyfills": "^0.28.0",
     "vite-plugin-wasm": "^3.6.0",
     "vite-tsconfig-paths": "^5.1.4",
-    "vitest": "^4.1.11"
+    "vitest": "^5.0.5"
   }
 }

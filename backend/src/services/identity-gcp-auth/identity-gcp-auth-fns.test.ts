@@ -17,10 +17,12 @@ vi.mock("@app/lib/logger", () => ({
 }));
 
 vi.mock("google-auth-library", () => ({
-  OAuth2Client: vi.fn(() => ({
-    getFederatedSignonCerts,
-    verifySignedJwtWithCertsAsync
-  }))
+  OAuth2Client: vi.fn(function OAuth2Client() {
+    return {
+      getFederatedSignonCerts,
+      verifySignedJwtWithCertsAsync
+    };
+  })
 }));
 
 vi.mock("@app/lib/config/request", async (importOriginal) => {

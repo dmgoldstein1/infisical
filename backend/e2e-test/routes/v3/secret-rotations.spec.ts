@@ -732,9 +732,7 @@ describe("Secret Rotations", async () => {
           const finalSecretValue = await getSecretValue(secretMapping.password);
           expect(finalSecretValue).not.toBe(startSecretValue);
         },
-        {
-          timeout: 300_000
-        }
+        300_000
       );
     }
   });

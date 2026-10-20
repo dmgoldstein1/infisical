@@ -3,6 +3,7 @@ import { ChevronRightIcon, FingerprintIcon } from "lucide-react";
 
 import { TableCell, TableRow, Tooltip, TooltipContent, TooltipTrigger } from "@app/components/v3";
 import { TDynamicSecret } from "@app/hooks/api/dynamicSecret/types";
+import type { SecretOverviewPageSearch } from "@app/pages/secret-manager/OverviewPage/overviewSearch";
 
 import { QuickSearchSelection } from "./quickSearchTypes";
 
@@ -26,7 +27,7 @@ export const QuickSearchDynamicSecretItem = ({
   const handleNavigate = () => {
     onSelectResult({ search: dynamicSecret.name });
     navigate({
-      search: (prev) => ({
+      search: (prev: SecretOverviewPageSearch) => ({
         ...prev,
         secretPath: dynamicSecret.path,
         search: undefined,

@@ -1,0 +1,56 @@
+name: Go CLI Tests
+
+on:
+  pull_request:
+    types: [opened, synchronize]
+    paths:
+      - "**"
+
+  workflow_dispatch:
+
+  workflow_call:
+    secrets:
+      CLI_TESTS_UA_CLIENT_ID:
+        required: true
+      CLI_TESTS_UA_CLIENT_SECRET:
+        required: true
+      CLI_TESTS_SERVICE_TOKEN:
+        required: true
+      CLI_TESTS_PROJECT_ID:
+        required: true
+      CLI_TESTS_ENV_SLUG:
+        required: true
+      CLI_TESTS_USER_EMAIL:
+        required: true
+      CLI_TESTS_USER_PASSWORD:
+        required: true
+      CLI_TESTS_INFISICAL_VAULT_FILE_PASSPHRASE:
+        required: true
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - name: Setup Go
+        uses: actions/setup-go@7b8cf10d4e4a01d4992d18a89f4d7dc5a3e6d6f4 # v4.3.0
+        with:
+          go-version: "1.26.9"
+      - name: Install dependencies
+        run: go get .
+      - name: Race-check the Agent Vault packages
+        run: go test -race -count=1 ./packages/agentvault/ ./packages/api/
+      - name: Race-check the PAM gateway packages
+        run: go test -race -count=1 ./packages/gateway-v2/... ./packages/pam/handlers/clickhouse/
+      - name: Test with the Go CLI
+        env:
+          CLI_TESTS_UA_CLIENT_ID: ${{ secrets.CLI_TESTS_UA_CLIENT_ID }}
+          CLI_TESTS_UA_CLIENT_SECRET: ${{ secrets.CLI_TESTS_UA_CLIENT_SECRET }}
+          CLI_TESTS_SERVICE_TOKEN: ${{ secrets.CLI_TESTS_SERVICE_TOKEN }}
+          CLI_TESTS_PROJECT_ID: ${{ secrets.CLI_TESTS_PROJECT_ID }}
+          CLI_TESTS_ENV_SLUG: ${{ secrets.CLI_TESTS_ENV_SLUG }}
+          CLI_TESTS_USER_EMAIL: ${{ secrets.CLI_TESTS_USER_EMAIL }}
+          CLI_TESTS_USER_PASSWORD: ${{ secrets.CLI_TESTS_USER_PASSWORD }}
+          #   INFISICAL_VAULT_FILE_PASSPHRASE: ${{ secrets.CLI_TESTS_INFISICAL_VAULT_FILE_PASSPHRASE }}
+
+        run: go test -v -count=1 ./test

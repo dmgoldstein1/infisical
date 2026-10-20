@@ -40,6 +40,8 @@ export const ErrorPage = ({ error }: ErrorComponentProps) => {
 
   const isAxios = error instanceof AxiosError;
   const status = isAxios ? (error.status ?? error.response?.status) : undefined;
+  const errorName = error instanceof Error ? error.name : undefined;
+  const errorMessage = error instanceof Error ? error.message : undefined;
 
   if (status === 403) {
     return <ForbiddenPage error={error} />;
@@ -63,7 +65,7 @@ export const ErrorPage = ({ error }: ErrorComponentProps) => {
     badgeText = "Network Error";
     causeSentence = "A network error stopped this page from loading.";
   } else {
-    badgeText = error?.name || "Unexpected Error";
+    badgeText = errorName || "Unexpected Error";
     causeSentence = "An unexpected error stopped this page from loading.";
   }
 
@@ -83,8 +85,8 @@ export const ErrorPage = ({ error }: ErrorComponentProps) => {
 
   const errorReport = [
     `route: ${window.location.pathname}`,
-    `error: ${error?.name ?? "Unknown"}`,
-    `message: ${error?.message ?? ""}`,
+    `error: ${errorName ?? "Unknown"}`,
+    `message: ${errorMessage ?? ""}`,
     status ? `status: ${status}` : null,
     reqId ? `request: ${reqId}` : null,
     `time: ${occurredAt}`,

@@ -42,7 +42,7 @@ type Props = {
 export const InviteMembersDialog = ({ isOpen, onOpenChange }: Props) => {
   const { currentOrg } = useOrganization();
   const addMembers = useAddAgentVaultMembers();
-  const navigate = useNavigate({ from: "" });
+  const navigate = useNavigate();
   const requesterEmail = useSearch({
     strict: false,
     select: (el) => (el as { requesterEmail?: string })?.requesterEmail
@@ -112,7 +112,12 @@ export const InviteMembersDialog = ({ isOpen, onOpenChange }: Props) => {
   }, [requesterEmail, requesterUserId, requesterStatus.isProjectUser, requesterStatus.userLabel]);
 
   const clearRequesterEmail = () => {
-    if (requesterEmail) navigate({ search: (prev) => ({ ...prev, requesterEmail: "" }) });
+    if (requesterEmail)
+      navigate({
+        to: "/organizations/$orgId/agent-vault/access-management",
+        search: (prev) => ({ ...prev, requesterEmail: "" }),
+        params: { orgId: currentOrg.id }
+      });
   };
 
   const handleClose = () => {

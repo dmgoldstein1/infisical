@@ -11,16 +11,7 @@ name: "Publish FIPS test toolchain image"
 # OpenSSL compilation takes hours. arm64 is published because docker-compose.dev.yml
 # uses this image for local dev on Apple Silicon.
 
-on:
-  push:
-    branches:
-      - main
-    paths:
-      - "backend/Dockerfile.fips-toolchain"
-      - ".github/workflows/publish-fips-toolchain.yml"
-      - "build-versions.env"
-  workflow_dispatch:
-
+on: workflow_dispatch
 concurrency:
   group: publish-fips-toolchain
   cancel-in-progress: false

@@ -1,11 +1,5 @@
 name: Release standalone docker image
-on:
-    push:
-        tags:
-            - "v0.*.*"
-            - "v0.*.*-nightly-*"
-            - "v0.*.*-nightly-*.*"
-
+on: workflow_dispatch
 env:
     # Pinned separately from the action, which carries its own older default.
     # Named out of Trivy's own TRIVY_* env namespace, which it would otherwise sit in.

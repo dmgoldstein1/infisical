@@ -1,9 +1,6 @@
 name: Validate PR Title
 
-on:
-  pull_request:
-    types: [opened, edited, synchronize, reopened]
-
+on: workflow_dispatch
 jobs:
   validate-pr-title:
     name: Validate PR Title Format

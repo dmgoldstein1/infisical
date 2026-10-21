@@ -1,9 +1,6 @@
 name: Issue Product Labeler
 
-on:
-  issues:
-    types: [opened]
-
+on: workflow_dispatch
 jobs:
   add-product-label:
     runs-on: ubuntu-latest

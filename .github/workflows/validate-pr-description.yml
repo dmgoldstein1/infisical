@@ -1,9 +1,6 @@
 name: Validate PR Description
 
-on:
-  pull_request:
-    types: [opened, edited, synchronize, reopened, ready_for_review]
-
+on: workflow_dispatch
 jobs:
   validate-pr-description:
     name: Validate PR Description

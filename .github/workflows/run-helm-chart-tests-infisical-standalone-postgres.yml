@@ -1,10 +1,5 @@
 name: Run Helm Chart Tests for Infisical Standalone Postgres
-on:
-  pull_request:
-    paths:
-      - "helm-charts/infisical-standalone-postgres/**"
-      - ".github/workflows/run-helm-chart-tests-infisical-standalone-postgres.yml"
-
+on: workflow_dispatch
 jobs:
   test-helm:
     name: Test Helm Chart

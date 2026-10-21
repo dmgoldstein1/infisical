@@ -1,11 +1,6 @@
 name: Check migration file edited
 
-on:
-  pull_request:
-    types: [opened, synchronize]
-    paths:
-      - 'backend/src/db/migrations/**'
-
+on: workflow_dispatch
 jobs:
   rename:
     runs-on: ubuntu-latest

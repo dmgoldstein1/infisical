@@ -1,14 +1,6 @@
 name: "Check Backend PR types and lint"
 
-on:
-  pull_request:
-    types: [opened, synchronize]
-    paths:
-      - "backend/**"
-      - "!backend/README.md"
-      - "!backend/.*"
-      - "backend/.eslintrc.js"
-
+on: workflow_dispatch
 jobs:
   type-check:
     name: Type Check

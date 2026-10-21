@@ -1,7 +1,6 @@
 name: Release Infisical Core Helm chart
 
-on: [workflow_dispatch]
-
+on: workflow_dispatch
 jobs:
   test-helm:
     name: Test Helm Chart

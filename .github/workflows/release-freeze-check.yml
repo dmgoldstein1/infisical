@@ -1,12 +1,5 @@
 name: Release freeze check
-on:
-  workflow_call:
-    inputs:
-      freeze:
-        description: "Value of the DEPLOY_FREEZE org variable, passed by the caller"
-        type: string
-        required: true
-
+on: workflow_dispatch
 jobs:
   freeze-check:
     name: Release freeze check

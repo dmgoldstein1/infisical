@@ -1,1 +1,4 @@
 requests==2.34.2
+# CVE pins: transitive floors resolved by osv-scanner (PYSEC-2026-4320, GHSA-65pc-fj4g-8rjx)
+certifi==2026.10.19
+idna==3.20

@@ -107,7 +107,10 @@
     "find-my-way": "^9.7.0",
     "body-parser": "^1.20.6",
     "shell-quote": "^1.9.0",
-    "websocket-driver": "^0.7.5"
+    "websocket-driver": "^0.7.5",
+    "botframework-streaming": {
+      "ws": "7.5.13"
+    }
   },
   "devDependencies": {
     "@react-email/preview-server": "^5.0.6",

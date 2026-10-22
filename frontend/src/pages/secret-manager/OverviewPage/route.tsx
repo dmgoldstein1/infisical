@@ -1,8 +1,21 @@
-import { createFileRoute, linkOptions, stripSearchParams } from "@tanstack/react-router";
+import { createFileRoute, stripSearchParams } from "@tanstack/react-router";
 import { zodValidator } from "@tanstack/zod-adapter";
+import { z } from "zod";
 
 import { OverviewPage } from "./OverviewPage";
-import { SecretOverviewPageQuerySchema } from "./overviewSearch";
+
+const SecretOverviewPageQuerySchema = z.object({
+  search: z.string().catch(""),
+  clearSearch: z.boolean().optional(),
+  secretPath: z.string().catch("/"),
+  connectionId: z.string().optional(),
+  connectionName: z.string().optional(),
+  environments: z.array(z.string()).catch([]),
+  dynamicSecretId: z.string().optional(),
+  honeyTokenId: z.string().optional(),
+  tags: z.string().optional(),
+  filterBy: z.string().optional()
+});
 
 export const Route = createFileRoute(
   "/_authenticate/_inject-org-details/_org-layout/organizations/$orgId/projects/secret-management/$projectId/_secret-manager-layout/overview"
@@ -21,18 +34,12 @@ export const Route = createFileRoute(
       })
     ]
   },
-  beforeLoad: ({
-    context,
-    params
-  }): { breadcrumbs: { label: string; link: ReturnType<typeof linkOptions> }[] } => ({
+  beforeLoad: ({ context }) => ({
+    ...context,
     breadcrumbs: [
       ...context.breadcrumbs,
       {
-        label: "Secrets",
-        link: linkOptions({
-          to: "/organizations/$orgId/projects/secret-management/$projectId/overview",
-          params
-        })
+        label: "Secrets"
       }
     ]
   })

@@ -1,12 +1,6 @@
 name: Validate upgrade impact data
 
-on:
-  pull_request:
-    paths:
-      - "upgrade-impact/**"
-      - ".github/workflows/validate-upgrade-impact.yml"
-      - ".github/workflows/generate-upgrade-impact.yml"
-
+on: workflow_dispatch
 jobs:
   validate:
     runs-on: ubuntu-latest

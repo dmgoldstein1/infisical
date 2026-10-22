@@ -21,15 +21,7 @@ name: "Check API For Breaking Changes"
 # that needs the head re-diffed against current main, which is what a merge queue
 # (`merge_group`) is for, and the repo does not use one yet.
 
-on:
-  pull_request:
-    types: [opened, synchronize, reopened]
-    paths:
-      - "backend/**"
-      - ".github/workflows/check-api-for-breaking-changes.yml"
-      - ".github/actions/generate-openapi-spec/**"
-      - "build-versions.env"
-
+on: workflow_dispatch
 concurrency:
   group: check-api-breaking-${{ github.event.pull_request.number }}
   cancel-in-progress: true

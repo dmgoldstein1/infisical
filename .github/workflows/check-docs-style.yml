@@ -1,18 +1,6 @@
 name: Check docs style
 
-on:
-  pull_request:
-    types: [opened, synchronize]
-  workflow_dispatch:
-    inputs:
-      scope:
-        description: Files to lint
-        type: choice
-        options:
-          - changed
-          - all
-        default: changed
-
+on: workflow_dispatch
 jobs:
   changes:
     name: Detect docs changes

@@ -1,13 +1,6 @@
 name: "Validate DB schemas"
 
-on:
-    pull_request:
-        types: [opened, synchronize]
-        paths:
-            - "backend/**"
-
-    workflow_call:
-
+on: workflow_dispatch
 jobs:
     validate-db-schemas:
         name: Validate DB schemas

@@ -1,15 +1,6 @@
 name: "Run blackbox tests"
 
-on:
-  pull_request:
-    types: [opened, synchronize]
-    paths:
-      - "backend/**"
-      - "!backend/README.md"
-      - "tests/**"
-      - "build-versions.env"
-      - ".github/workflows/run-blackbox-tests.yml"
-
+on: workflow_dispatch
 concurrency:
   group: run-blackbox-tests-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true

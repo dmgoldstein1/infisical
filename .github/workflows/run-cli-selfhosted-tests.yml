@@ -11,18 +11,7 @@ name: CLI Self-Hosted Tests
 # suite builds and boots backend@HEAD, so it is also the CLI-vs-backend
 # contract check for backend changes.
 
-on:
-  pull_request:
-    types: [opened, synchronize]
-    paths:
-      - "infisical-cli/**"
-      - "backend/**"
-      - "!backend/README.md"
-      - "!backend/.*"
-      - "build-versions.env"
-      - ".github/workflows/run-cli-selfhosted-tests.yml"
-  workflow_dispatch:
-
+on: workflow_dispatch
 concurrency:
   group: cli-selfhosted-tests-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}

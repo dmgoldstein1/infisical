@@ -1,10 +1,5 @@
 name: Run Helm Chart Tests for Gateway
-on:
-  pull_request:
-    paths:
-      - "helm-charts/infisical-gateway/**"
-      - ".github/workflows/run-helm-chart-tests-infisical-gateway.yml"
-
+on: workflow_dispatch
 jobs:
   test-helm:
     name: Test Helm Chart

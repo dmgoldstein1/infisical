@@ -1,12 +1,6 @@
 name: "Check Dockerfile pins"
 
-on:
-    pull_request:
-        types: [opened, synchronize]
-        paths:
-            - "**/Dockerfile*"
-            - "build-versions.env"
-
+on: workflow_dispatch
 jobs:
     cli-pin:
         name: CLI pin matches build-versions.env

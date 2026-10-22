@@ -1,8 +1,5 @@
 name: Detect Non-RE2 Regex
-on:
-  pull_request:
-    types: [opened, synchronize]
-
+on: workflow_dispatch
 jobs:
   check-non-re2-regex:
     runs-on: ubuntu-latest

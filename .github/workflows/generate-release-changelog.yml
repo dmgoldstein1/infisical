@@ -1,16 +1,6 @@
 name: Generate Changelog
 
-on:
-  workflow_dispatch:
-    inputs:
-      release_tag:
-        description: "Release tag to generate changelog for (e.g. v0.159.25). Defaults to latest tag if omitted."
-        required: false
-  push:
-    tags:
-      - "v0.*.*"
-      - "!*nightly*"
-
+on: workflow_dispatch
 jobs:
   freeze-check:
     name: Release freeze check

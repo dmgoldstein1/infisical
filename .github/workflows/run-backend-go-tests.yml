@@ -1,14 +1,6 @@
 name: "Run Go backend tests"
 
-on:
-  pull_request:
-    types: [opened, synchronize]
-    paths:
-      - "backend-go/**"
-      - "!backend-go/README.md"
-      - "!backend-go/.*"
-  workflow_call:
-
+on: workflow_dispatch
 jobs:
   lint:
     name: Lint

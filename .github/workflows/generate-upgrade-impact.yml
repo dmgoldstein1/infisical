@@ -1,19 +1,6 @@
 name: Generate upgrade impact data
 
-on:
-  workflow_dispatch:
-    inputs:
-      tag:
-        description: "Stable release tag to analyze, for example v0.159.23"
-        required: true
-        type: string
-  workflow_call:
-    inputs:
-      tag:
-        description: "Stable release tag to analyze, for example v0.159.23"
-        required: true
-        type: string
-
+on: workflow_dispatch
 permissions:
   contents: write
   pull-requests: write

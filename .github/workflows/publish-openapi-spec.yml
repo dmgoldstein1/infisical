@@ -13,14 +13,7 @@ name: "Publish OpenAPI Spec"
 # on an exact key match, and it misses silently: the checker just rebuilds the
 # baseline every time and this job's work is thrown away.
 
-on:
-  push:
-    branches:
-      - main
-    paths:
-      - "backend/**"
-  workflow_dispatch:
-
+on: workflow_dispatch
 concurrency:
   group: publish-openapi-spec-${{ github.ref }}
   cancel-in-progress: false

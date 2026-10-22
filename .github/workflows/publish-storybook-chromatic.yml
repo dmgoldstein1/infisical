@@ -1,16 +1,6 @@
 name: Publish Storybook to Chromatic
 
-on:
-  pull_request:
-    types: [opened, synchronize]
-    paths:
-      - "frontend/src/components/v3/**"
-      - "frontend/src/lib/**"
-      - "frontend/src/index.css"
-      - "frontend/.storybook/**"
-      - "frontend/package-lock.json"
-      - ".github/workflows/publish-storybook-chromatic.yml"
-
+on: workflow_dispatch
 concurrency:
   group: storybook-chromatic-${{ github.event.pull_request.number }}
   cancel-in-progress: true

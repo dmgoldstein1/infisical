@@ -3,6 +3,7 @@ import { ChevronRightIcon, KeyIcon } from "lucide-react";
 
 import { TableCell, TableRow, Tooltip, TooltipContent, TooltipTrigger } from "@app/components/v3";
 import { TMetadataMatchedSecret } from "@app/hooks/api/dashboard/types";
+import type { SecretOverviewPageSearch } from "@app/pages/secret-manager/OverviewPage/overviewSearch";
 
 import { QuickSearchMetadata, QuickSearchMetadataList } from "./QuickSearchMetadataList";
 import { QuickSearchSecretCopyButton } from "./QuickSearchSecretCopyButton";
@@ -31,7 +32,7 @@ export const QuickSearchMetadataSecretItem = ({
   const handleNavigate = () => {
     onSelectResult({ search: secret.secretKey, tags: [] });
     navigate({
-      search: (prev) => ({
+      search: (prev: SecretOverviewPageSearch) => ({
         ...prev,
         secretPath: secret.secretPath,
         search: undefined,

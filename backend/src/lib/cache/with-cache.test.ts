@@ -1,4 +1,6 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, type Mock, vi } from "vitest";
+
+import { TKeyStoreFactory } from "@app/keystore/keystore";
 
 import { withCache } from "./with-cache";
 
@@ -8,16 +10,16 @@ vi.mock("@app/lib/logger", () => ({
 
 describe("withCache", () => {
   let mockKeyStore: {
-    getItem: ReturnType<typeof vi.fn>;
-    setItemWithExpiry: ReturnType<typeof vi.fn>;
-    ttl: ReturnType<typeof vi.fn>;
+    getItem: Mock<TKeyStoreFactory["getItem"]>;
+    setItemWithExpiry: Mock<TKeyStoreFactory["setItemWithExpiry"]>;
+    ttl: Mock<TKeyStoreFactory["ttl"]>;
   };
 
   beforeEach(() => {
     mockKeyStore = {
-      getItem: vi.fn(),
-      setItemWithExpiry: vi.fn().mockResolvedValue("OK"),
-      ttl: vi.fn().mockResolvedValue(-2)
+      getItem: vi.fn<TKeyStoreFactory["getItem"]>(),
+      setItemWithExpiry: vi.fn<TKeyStoreFactory["setItemWithExpiry"]>().mockResolvedValue("OK"),
+      ttl: vi.fn<TKeyStoreFactory["ttl"]>().mockResolvedValue(-2)
     };
   });
 
@@ -362,16 +364,16 @@ describe("withCache", () => {
 
 describe("withCacheFingerprint", () => {
   let mockKeyStore: {
-    getItem: ReturnType<typeof vi.fn>;
-    setItemWithExpiry: ReturnType<typeof vi.fn>;
-    ttl: ReturnType<typeof vi.fn>;
+    getItem: Mock<TKeyStoreFactory["getItem"]>;
+    setItemWithExpiry: Mock<TKeyStoreFactory["setItemWithExpiry"]>;
+    ttl: Mock<TKeyStoreFactory["ttl"]>;
   };
 
   beforeEach(() => {
     mockKeyStore = {
-      getItem: vi.fn(),
-      setItemWithExpiry: vi.fn().mockResolvedValue("OK"),
-      ttl: vi.fn().mockResolvedValue(-2)
+      getItem: vi.fn<TKeyStoreFactory["getItem"]>(),
+      setItemWithExpiry: vi.fn<TKeyStoreFactory["setItemWithExpiry"]>().mockResolvedValue("OK"),
+      ttl: vi.fn<TKeyStoreFactory["ttl"]>().mockResolvedValue(-2)
     };
   });
 

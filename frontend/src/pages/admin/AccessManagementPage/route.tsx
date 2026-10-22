@@ -6,7 +6,9 @@ export const Route = createFileRoute(
   "/_authenticate/_inject-org-details/admin/_admin-layout/access-management"
 )({
   component: AccessManagementPage,
-  beforeLoad: async () => {
+  beforeLoad: async (): Promise<{
+    breadcrumbs: { label: string; link: ReturnType<typeof linkOptions> }[];
+  }> => {
     return {
       breadcrumbs: [
         {

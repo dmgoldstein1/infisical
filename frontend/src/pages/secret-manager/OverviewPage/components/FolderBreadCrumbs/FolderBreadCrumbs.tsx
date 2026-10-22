@@ -2,6 +2,8 @@ import { faFolderOpen } from "@fortawesome/free-solid-svg-icons";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import { useNavigate } from "@tanstack/react-router";
 
+import type { SecretOverviewPageSearch } from "@app/pages/secret-manager/OverviewPage/overviewSearch";
+
 type Props = {
   secretPath: string;
   onResetSearch: (path: string) => void;
@@ -16,7 +18,7 @@ export const FolderBreadCrumbs = ({ secretPath = "/", onResetSearch }: Props) =>
     const newSecPath = `/${secretPath.split("/").filter(Boolean).slice(0, index).join("/")}`;
     if (secretPath === newSecPath) return;
     navigate({
-      search: (prev) => ({ ...prev, secretPath: newSecPath })
+      search: (prev: SecretOverviewPageSearch) => ({ ...prev, secretPath: newSecPath })
     }).then(() => onResetSearch(newSecPath));
   };
 

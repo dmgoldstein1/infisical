@@ -1610,6 +1610,8 @@ describe("CertificateV3Service", () => {
           errors: []
         } as any);
         vi.mocked(mockCertificateRequestDAL.transaction).mockImplementation(
+          // Mock must resolve like the real transaction; callers await it.
+          // eslint-disable-next-line @typescript-eslint/no-misused-promises
           async (callback: (tx: any) => Promise<unknown>) => callback({})
         );
       };

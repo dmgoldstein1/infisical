@@ -294,6 +294,7 @@ import {
   TableEmptyRow,
   TableFilteredEmptyRow
 } from "./components";
+import type { SecretOverviewPageSearch } from "./overviewSearch";
 import {
   createOverviewTelemetry,
   observeOverviewRequest,
@@ -1424,7 +1425,10 @@ const OverviewPageContent = () => {
       const match = dynamicSecrets.find((ds) => ds.id === routerSearch.dynamicSecretId);
       if (match) {
         handlePopUpOpen("dynamicSecretLeases", match);
-        navigate({ search: (prev) => ({ ...prev, dynamicSecretId: undefined }), replace: true });
+        navigate({
+          search: (prev: SecretOverviewPageSearch) => ({ ...prev, dynamicSecretId: undefined }),
+          replace: true
+        });
       }
     }
   }, [routerSearch.dynamicSecretId, dynamicSecrets?.map((ds) => ds.id).join(",")]);
@@ -2650,7 +2654,7 @@ const OverviewPageContent = () => {
 
     setSearchFilter("");
     navigate({
-      search: (prev) => ({
+      search: (prev: SecretOverviewPageSearch) => ({
         ...prev,
         secretPath: `${routerSearch.secretPath === "/" ? "" : routerSearch.secretPath}/${path}`
       })
@@ -4690,7 +4694,10 @@ const OverviewPageContent = () => {
         onClose={() => {
           setDetailsDrawerHoneyTokenId(null);
           if (routerSearch.honeyTokenId) {
-            navigate({ search: (prev) => ({ ...prev, honeyTokenId: undefined }), replace: true });
+            navigate({
+              search: (prev: SecretOverviewPageSearch) => ({ ...prev, honeyTokenId: undefined }),
+              replace: true
+            });
           }
         }}
       />

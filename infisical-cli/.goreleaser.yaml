@@ -1,0 +1,361 @@
+before:
+  hooks:
+    - ./scripts/completions.sh
+    - ./scripts/manpages.sh
+
+builds:
+  - id: linux-amd64-rdp
+    binary: infisical
+    ldflags:
+      - -X github.com/Infisical/infisical-merge/packages/util.CLI_VERSION={{ .Version }}
+      - -X github.com/Infisical/infisical-merge/packages/telemetry.POSTHOG_API_KEY_FOR_CLI={{ .Env.POSTHOG_API_KEY_FOR_CLI }}
+      - -extldflags "-static"
+    flags:
+      - -trimpath
+      - -tags=rdp,osusergo,netgo
+    env:
+      - CGO_ENABLED=1
+      - CC=x86_64-unknown-linux-musl-gcc
+      - 'CGO_LDFLAGS=-L packages/pam/handlers/rdp/native/target/x86_64-unknown-linux-musl/release'
+    goos:
+      - linux
+    goarch:
+      - amd64
+
+  - id: linux-arm64-rdp
+    binary: infisical
+    ldflags:
+      - -X github.com/Infisical/infisical-merge/packages/util.CLI_VERSION={{ .Version }}
+      - -X github.com/Infisical/infisical-merge/packages/telemetry.POSTHOG_API_KEY_FOR_CLI={{ .Env.POSTHOG_API_KEY_FOR_CLI }}
+      - -extldflags "-static"
+    flags:
+      - -trimpath
+      - -tags=rdp,osusergo,netgo
+    env:
+      - CGO_ENABLED=1
+      - CC=aarch64-unknown-linux-musl-gcc
+      - 'CGO_LDFLAGS=-L packages/pam/handlers/rdp/native/target/aarch64-unknown-linux-musl/release'
+    goos:
+      - linux
+    goarch:
+      - arm64
+
+  - id: windows-amd64-rdp
+    binary: infisical
+    ldflags:
+      - -X github.com/Infisical/infisical-merge/packages/util.CLI_VERSION={{ .Version }}
+      - -X github.com/Infisical/infisical-merge/packages/telemetry.POSTHOG_API_KEY_FOR_CLI={{ .Env.POSTHOG_API_KEY_FOR_CLI }}
+      - -extldflags "-static"
+    flags:
+      - -trimpath
+      - -tags=rdp
+    env:
+      - CGO_ENABLED=1
+      - CC=x86_64-w64-mingw32-gcc
+      - CXX=x86_64-w64-mingw32-g++
+      - 'CGO_LDFLAGS=-L packages/pam/handlers/rdp/native/target/x86_64-pc-windows-gnu/release'
+    goos:
+      - windows
+    goarch:
+      - amd64
+
+  - id: linux-386-rdp
+    binary: infisical
+    ldflags:
+      - -X github.com/Infisical/infisical-merge/packages/util.CLI_VERSION={{ .Version }}
+      - -X github.com/Infisical/infisical-merge/packages/telemetry.POSTHOG_API_KEY_FOR_CLI={{ .Env.POSTHOG_API_KEY_FOR_CLI }}
+      - -extldflags "-static"
+    flags:
+      - -trimpath
+      - -tags=rdp,osusergo,netgo
+    env:
+      - CGO_ENABLED=1
+      - CC=i686-unknown-linux-musl-gcc
+      - 'CGO_LDFLAGS=-L packages/pam/handlers/rdp/native/target/i686-unknown-linux-musl/release'
+    goos:
+      - linux
+    goarch:
+      - "386"
+
+  - id: linux-armv6-rdp
+    binary: infisical
+    ldflags:
+      - -X github.com/Infisical/infisical-merge/packages/util.CLI_VERSION={{ .Version }}
+      - -X github.com/Infisical/infisical-merge/packages/telemetry.POSTHOG_API_KEY_FOR_CLI={{ .Env.POSTHOG_API_KEY_FOR_CLI }}
+      - -extldflags "-static"
+    flags:
+      - -trimpath
+      - -tags=rdp,osusergo,netgo
+    env:
+      - CGO_ENABLED=1
+      - CC=arm-unknown-linux-musleabi-gcc
+      - 'CGO_LDFLAGS=-L packages/pam/handlers/rdp/native/target/arm-unknown-linux-musleabi/release'
+    goos:
+      - linux
+    goarch:
+      - arm
+    goarm:
+      - "6"
+
+  - id: linux-armv7-rdp
+    binary: infisical
+    ldflags:
+      - -X github.com/Infisical/infisical-merge/packages/util.CLI_VERSION={{ .Version }}
+      - -X github.com/Infisical/infisical-merge/packages/telemetry.POSTHOG_API_KEY_FOR_CLI={{ .Env.POSTHOG_API_KEY_FOR_CLI }}
+      - -extldflags "-static"
+    flags:
+      - -trimpath
+      - -tags=rdp,osusergo,netgo
+    env:
+      - CGO_ENABLED=1
+      - CC=armv7-unknown-linux-musleabihf-gcc
+      - 'CGO_LDFLAGS=-L packages/pam/handlers/rdp/native/target/armv7-unknown-linux-musleabihf/release'
+    goos:
+      - linux
+    goarch:
+      - arm
+    goarm:
+      - "7"
+
+  # PKCS#11-enabled HSM companion. Loads the vendor's PKCS#11 driver via dlopen
+  # at runtime, so it MUST be dynamically linked (no -extldflags "-static") and
+  # built with a glibc toolchain. Shipped as a separate artifact and fetched by
+  # the launcher in packages/gateway-v2/pkcs11_launcher.go.
+  - id: linux-amd64-pkcs11
+    binary: infisical-pkcs11
+    ldflags:
+      - -X github.com/Infisical/infisical-merge/packages/util.CLI_VERSION={{ .Version }}
+      - -X github.com/Infisical/infisical-merge/packages/telemetry.POSTHOG_API_KEY_FOR_CLI={{ .Env.POSTHOG_API_KEY_FOR_CLI }}
+    flags:
+      - -trimpath
+      - -tags=pkcs11
+    env:
+      - CGO_ENABLED=1
+      - CC=x86_64-linux-gnu-gcc
+    goos:
+      - linux
+    goarch:
+      - amd64
+
+  - id: linux-arm64-pkcs11
+    binary: infisical-pkcs11
+    ldflags:
+      - -X github.com/Infisical/infisical-merge/packages/util.CLI_VERSION={{ .Version }}
+      - -X github.com/Infisical/infisical-merge/packages/telemetry.POSTHOG_API_KEY_FOR_CLI={{ .Env.POSTHOG_API_KEY_FOR_CLI }}
+    flags:
+      - -trimpath
+      - -tags=pkcs11
+    env:
+      - CGO_ENABLED=1
+      - CC=aarch64-linux-gnu-gcc
+    goos:
+      - linux
+    goarch:
+      - arm64
+
+  # BSDs and windows/arm64 stay on CGO=0 stub; see build-rdp-bridge.yml.
+  - id: all-other-builds
+    env:
+      - CGO_ENABLED=0
+    binary: infisical
+    ldflags:
+      - -X github.com/Infisical/infisical-merge/packages/util.CLI_VERSION={{ .Version }}
+      - -X github.com/Infisical/infisical-merge/packages/telemetry.POSTHOG_API_KEY_FOR_CLI={{ .Env.POSTHOG_API_KEY_FOR_CLI }}
+    flags:
+      - -trimpath
+    goos:
+      - freebsd
+      - netbsd
+      - openbsd
+      - windows
+    goarch:
+      - "386"
+      - amd64
+      - arm
+      - arm64
+    goarm:
+      - "6"
+      - "7"
+    ignore:
+      - goos: freebsd
+        goarch: "386"
+      - goos: windows
+        goarch: amd64
+      - goos: windows
+        goarch: "386"
+      - goos: windows
+        goarch: arm
+
+archives:
+  - id: default
+    builds_info:
+      group: default
+    builds:
+      - linux-amd64-rdp
+      - linux-arm64-rdp
+      - linux-386-rdp
+      - linux-armv6-rdp
+      - linux-armv7-rdp
+      - windows-amd64-rdp
+      - all-other-builds
+    format_overrides:
+      - goos: windows
+        format: zip
+    files:
+      - README*
+      - LICENSE*
+      - manpages/*
+      - completions/*
+
+  - id: pkcs11
+    builds:
+      - linux-amd64-pkcs11
+      - linux-arm64-pkcs11
+    name_template: "infisical-pkcs11_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    files:
+      - README*
+      - LICENSE*
+
+release:
+  # replace_existing_artifacts (Since: v1.25, GitHub only) makes each upload
+  # idempotent: on a 422 already_exists it deletes the conflicting asset and
+  # retries, so re-runs work without manually clearing assets first.
+  mode: keep-existing
+  replace_existing_artifacts: true
+
+checksum:
+  name_template: "checksums.txt"
+
+snapshot:
+  name_template: "{{ .Version }}-devel"
+
+# publishers:
+#   - name: fury.io
+#     ids:
+#       - infisical
+#     dir: "{{ dir .ArtifactPath }}"
+#     cmd: curl -F package=@{{ .ArtifactName }} https://{{ .Env.FURY_TOKEN }}@push.fury.io/infisical/
+
+# brews: moved to .goreleaser-darwin.yaml (where darwin binaries are built).
+
+nfpms:
+  - id: infisical
+    package_name: infisical
+    builds:
+      - linux-amd64-rdp
+      - linux-arm64-rdp
+      - linux-386-rdp
+      - linux-armv6-rdp
+      - linux-armv7-rdp
+    vendor: Infisical, Inc
+    homepage: https://infisical.com/
+    maintainer: Infisical, Inc
+    description: The offical Infisical CLI
+    license: MIT
+    formats:
+      - rpm
+      - deb
+      - apk
+      - archlinux
+    bindir: /usr/bin
+    contents:
+      - src: ./completions/infisical.bash
+        dst: /etc/bash_completion.d/infisical
+      - src: ./completions/infisical.fish
+        dst: /usr/share/fish/vendor_completions.d/infisical.fish
+      - src: ./completions/infisical.zsh
+        dst: /usr/share/zsh/site-functions/_infisical
+      - src: ./manpages/infisical.1.gz
+        dst: /usr/share/man/man1/infisical.1.gz
+
+scoop:
+  name: infisical
+  bucket:
+    owner: Infisical
+    name: scoop-infisical
+  commit_author:
+    name: "Infisical"
+    email: ai@infisical.com
+  homepage: "https://infisical.com"
+  description: "The official Infisical CLI"
+  license: MIT
+
+winget:
+  - name: infisical
+    publisher: infisical
+    license: MIT
+    homepage: https://infisical.com
+    short_description: "The official Infisical CLI"
+    repository:
+      owner: infisical
+      name: winget-pkgs
+      branch: "infisical-{{.Version}}"
+      pull_request:
+        enabled: true
+        draft: false
+        base:
+          owner: microsoft
+          name: winget-pkgs
+          branch: master
+
+aurs:
+  - name: infisical-bin
+    ids:
+      - default
+    homepage: "https://infisical.com"
+    description: "The official Infisical CLI"
+    maintainers:
+      - Infisical, Inc <support@infisical.com>
+    license: MIT
+    private_key: "{{ .Env.AUR_KEY }}"
+    git_url: "ssh://aur@aur.archlinux.org/infisical-bin.git"
+    package: |-
+      # bin
+      install -Dm755 "./infisical" "${pkgdir}/usr/bin/infisical"
+      # license
+      install -Dm644 "./LICENSE" "${pkgdir}/usr/share/licenses/infisical/LICENSE"
+      # completions
+      mkdir -p "${pkgdir}/usr/share/bash-completion/completions/"
+      mkdir -p "${pkgdir}/usr/share/zsh/site-functions/"
+      mkdir -p "${pkgdir}/usr/share/fish/vendor_completions.d/"
+      install -Dm644 "./completions/infisical.bash" "${pkgdir}/usr/share/bash-completion/completions/infisical"
+      install -Dm644 "./completions/infisical.zsh" "${pkgdir}/usr/share/zsh/site-functions/_infisical"
+      install -Dm644 "./completions/infisical.fish" "${pkgdir}/usr/share/fish/vendor_completions.d/infisical.fish"
+      # man pages
+      install -Dm644 "./manpages/infisical.1.gz" "${pkgdir}/usr/share/man/man1/infisical.1.gz"
+
+dockers:
+  - dockerfile: docker/alpine
+    goos: linux
+    goarch: amd64
+    use: buildx
+    ids:
+      - linux-amd64-rdp
+    image_templates:
+      - "infisical/cli:{{ .Major }}.{{ .Minor }}.{{ .Patch }}-amd64"
+      - "infisical/cli:latest-amd64"
+    build_flag_templates:
+      - "--pull"
+      - "--platform=linux/amd64"
+  - dockerfile: docker/alpine
+    goos: linux
+    goarch: arm64
+    use: buildx
+    ids:
+      - linux-arm64-rdp
+    image_templates:
+      - "infisical/cli:{{ .Major }}.{{ .Minor }}.{{ .Patch }}-arm64"
+      - "infisical/cli:latest-arm64"
+    build_flag_templates:
+      - "--pull"
+      - "--platform=linux/arm64"
+
+docker_manifests:
+  - name_template: "infisical/cli:{{ .Major }}.{{ .Minor }}.{{ .Patch }}"
+    image_templates:
+      - "infisical/cli:{{ .Major }}.{{ .Minor }}.{{ .Patch }}-amd64"
+      - "infisical/cli:{{ .Major }}.{{ .Minor }}.{{ .Patch }}-arm64"
+  - name_template: "infisical/cli:latest"
+    image_templates:
+      - "infisical/cli:latest-amd64"
+      - "infisical/cli:latest-arm64"

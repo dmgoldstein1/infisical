@@ -95,7 +95,7 @@
     "eslint-plugin-import": {
       "minimatch": "^3.1.2"
     },
-    "ws": "^8.20.1",
+    "ws": "^8.21.0",
     "fast-xml-parser": "^5.7.0",
     "path-to-regexp": "^8.4.0",
     "protobufjs": "^7.6.5",
@@ -322,7 +322,7 @@
     "odbc@2.4.9": true,
     "oracledb@6.10.0": true,
     "pkcs11js@2.1.6": true,
-    "sharp@0.34.5": true,
+    "sharp@0.35.5": true,
     "ssh2@1.17.0": true,
     "unrs-resolver@1.12.2": true,
     "core-js": false,

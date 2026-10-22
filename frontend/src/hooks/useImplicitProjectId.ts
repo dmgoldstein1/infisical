@@ -5,7 +5,7 @@ import { useRouterState } from "@tanstack/react-router";
 // (see useImplicitProduct), so the id and the gate move together.
 export const useImplicitProjectId = () =>
   useRouterState({
-    select: (state) => {
+    select: (state): string | null => {
       for (let i = state.matches.length - 1; i >= 0; i -= 1) {
         const { implicitProjectId } = state.matches[i].context;
         if (implicitProjectId) return implicitProjectId;

@@ -3,6 +3,7 @@ import { ChevronRightIcon, RefreshCwIcon } from "lucide-react";
 
 import { TableCell, TableRow, Tooltip, TooltipContent, TooltipTrigger } from "@app/components/v3";
 import { TSecretRotationV2 } from "@app/hooks/api/secretRotationsV2";
+import type { SecretOverviewPageSearch } from "@app/pages/secret-manager/OverviewPage/overviewSearch";
 
 import { QuickSearchSelection } from "./quickSearchTypes";
 
@@ -26,7 +27,7 @@ export const QuickSearchSecretRotationItem = ({
   const handleNavigate = () => {
     onSelectResult({ search: secretRotation.name });
     navigate({
-      search: (prev) => ({
+      search: (prev: SecretOverviewPageSearch) => ({
         ...prev,
         secretPath: secretRotation.folder.path,
         search: undefined,

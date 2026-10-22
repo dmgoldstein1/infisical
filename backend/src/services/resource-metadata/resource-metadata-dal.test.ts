@@ -13,6 +13,8 @@ describe("metadata candidate SQL scope", () => {
       const db = knex({ client: "pg" });
       vi.spyOn(db.client, "acquireConnection").mockResolvedValue({});
       vi.spyOn(db.client, "releaseConnection").mockResolvedValue(undefined);
+      // Mock must stay async: knex calls .then() on client.query's return.
+      // eslint-disable-next-line @typescript-eslint/no-misused-promises
       const query = vi.spyOn(db.client, "query").mockImplementation(async (_connection, statement) => ({
         ...(statement as object),
         response: { rows: [], command: "SELECT" }
@@ -49,6 +51,8 @@ describe("metadata candidate SQL scope", () => {
       const db = knex({ client: "pg" });
       vi.spyOn(db.client, "acquireConnection").mockResolvedValue({});
       vi.spyOn(db.client, "releaseConnection").mockResolvedValue(undefined);
+      // Mock must stay async: knex calls .then() on client.query's return.
+      // eslint-disable-next-line @typescript-eslint/no-misused-promises
       const query = vi.spyOn(db.client, "query").mockImplementation(async (_connection, statement) => ({
         ...(statement as object),
         response: { rows: [], command: "SELECT" }

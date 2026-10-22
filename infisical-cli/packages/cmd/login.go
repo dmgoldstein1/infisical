@@ -1,0 +1,1269 @@
+/*
+Copyright (c) 2023 Infisical Inc.
+*/
+package cmd
+
+import (
+	"context"
+	"encoding/base64"
+	"encoding/hex"
+	"encoding/json"
+	"os"
+	"runtime"
+	"slices"
+	"strings"
+	"time"
+
+	"errors"
+	"fmt"
+	"net"
+	"net/http"
+	"net/url"
+	"regexp"
+
+	browser "github.com/pkg/browser"
+
+	"github.com/Infisical/infisical-merge/packages/api"
+	"github.com/Infisical/infisical-merge/packages/config"
+	"github.com/Infisical/infisical-merge/packages/models"
+	"github.com/Infisical/infisical-merge/packages/srp"
+	"github.com/Infisical/infisical-merge/packages/util"
+	"github.com/fatih/color"
+	"github.com/manifoldco/promptui"
+	"github.com/mattn/go-isatty"
+	"github.com/posthog/posthog-go"
+	"github.com/rs/cors"
+	"github.com/rs/zerolog/log"
+	"github.com/spf13/cobra"
+	"golang.org/x/term"
+
+	infisicalSdk "github.com/infisical/go-sdk"
+)
+
+func formatAuthMethod(authMethod string) string {
+	return strings.ReplaceAll(authMethod, "-", " ")
+}
+
+const ADD_USER = "Add a new account login"
+const REPLACE_USER = "Override current logged in user"
+const EXIT_USER_MENU = "Exit"
+const QUIT_BROWSER_LOGIN = "q"
+
+// mfaMaxAttempts is how many verification codes a user may try before a
+// command gives up. Every MFA prompt in the CLI uses it, so they stay in step.
+const mfaMaxAttempts = 5
+
+// loginCmd represents the login command
+var loginCmd = &cobra.Command{
+	Use:   "login",
+	Short: "Login into your Infisical account",
+	Long: `Login into your Infisical account.
+
+Sessions are stored in login profiles. Without options the profile is named
+after the account and organization, as in scott@example.com--acme-x4k2. Use
+--save-as <name> to store the login under a name of your choice, creating that
+profile or replacing its session, and --profile <name> to sign back in to a
+profile that already exists.`,
+	DisableFlagsInUseLine: true,
+	PreRunE: func(cmd *cobra.Command, args []string) error {
+		// daniel: oidc-jwt is deprecated in favor of `jwt`. we backfill the `jwt` flag with the value of `oidc-jwt` if it's set.
+		if cmd.Flags().Changed("oidc-jwt") && !cmd.Flags().Changed("jwt") {
+			oidcJWT, err := cmd.Flags().GetString("oidc-jwt")
+			if err != nil {
+				return err
+			}
+
+			err = cmd.Flags().Set("jwt", oidcJWT)
+			if err != nil {
+				return err
+			}
+		}
+
+		return nil
+	},
+	Run: func(cmd *cobra.Command, args []string) {
+		presetDomain := config.INFISICAL_URL
+
+		clearSelfHostedDomains, err := cmd.Flags().GetBool("clear-domains")
+
+		if err != nil {
+			util.HandleError(err)
+		}
+		silentMode, err := cmd.Flags().GetBool("silent")
+		if err != nil {
+			util.HandleError(err)
+		}
+
+		if clearSelfHostedDomains {
+			infisicalConfig, err := util.GetConfigFile()
+			if err != nil {
+				util.HandleError(err)
+			}
+
+			infisicalConfig.Domains = []string{}
+			err = util.WriteConfigFile(&infisicalConfig)
+
+			if err != nil {
+				util.HandleError(err)
+			}
+
+			util.PrintlnStderr("Cleared all self-hosted domains from the config file")
+			return
+		}
+
+		customHeaders, err := util.GetInfisicalCustomHeadersMap()
+		if err != nil {
+			util.HandleError(err, "Unable to get custom headers")
+		}
+
+		infisicalClient := infisicalSdk.NewInfisicalClient(context.Background(), infisicalSdk.Config{
+			SiteUrl:          config.INFISICAL_URL,
+			UserAgent:        api.USER_AGENT,
+			AutoTokenRefresh: false,
+			CustomHeaders:    customHeaders,
+		})
+
+		loginMethod, err := cmd.Flags().GetString("method")
+		if err != nil {
+			util.HandleError(err)
+		}
+		plainOutput, err := cmd.Flags().GetBool("plain")
+		if err != nil {
+			util.HandleError(err)
+		}
+
+		authMethodValid, strategy := util.IsAuthMethodValid(loginMethod, true)
+		if !authMethodValid {
+			util.PrintErrorMessageAndExit(fmt.Sprintf("Invalid login method: %s", loginMethod))
+		}
+
+		// standalone user auth
+		if loginMethod == "user" {
+			existingConfig, err := util.GetMigratedConfigFile()
+			if err != nil {
+				util.HandleError(err, "Unable to read the Infisical config file")
+			}
+
+			saveAs, err := cmd.Flags().GetString("save-as")
+			if err != nil {
+				util.HandleError(err)
+			}
+			profileOverride, profileOverrideSource := util.GetProfileOverride()
+			target, err := resolveLoginTarget(saveAs, profileOverride, profileOverrideSource, existingConfig)
+			if err != nil {
+				util.HandleError(err)
+			}
+
+			// Signing back in to a profile takes its organization, so
+			// --organization-id is not required to drive the login
+			// non-interactively the way it is for a fresh one.
+			isDirectUserLoginFlagsAndEnvsSet, err := validateDirectUserLoginFlagsAndEnvsSet(cmd, presetDomain, target.reauth && target.profile.ScopedOrganizationID() != "")
+
+			if err != nil {
+				util.HandleError(err)
+			}
+
+			// Login creates or refreshes a session and never scopes it through
+			// --org, so resolve the existing session with the override suspended:
+			// applying it here could only fail (unknown organization, MFA) and
+			// abort the login.
+			if _, orgSource := util.GetOrgOverride(); orgSource == util.OrgSourceFlag && !silentMode {
+				util.PrintWarning("--org does not apply to login. Pick the organization in the prompt, or pass --organization-id.")
+			}
+			restoreOrgOverride := util.SuspendOrgOverride()
+			currentLoggedInUserDetails, err := util.GetCurrentLoggedInUserDetails(true)
+			restoreOrgOverride()
+			// if the key can't be found, the selected profile doesn't exist yet, or
+			// there is an error getting current credentials from key ring, allow them to override
+			if err != nil && (errors.Is(err, util.ErrProfileNotFound) || errors.Is(err, util.ErrProfileDomainMismatch) || strings.Contains(err.Error(), "we couldn't find your logged in details")) {
+				log.Debug().Err(err)
+			} else if err != nil {
+				util.HandleError(err)
+			}
+
+			// A login that names its profile (--save-as, or --profile for an
+			// existing one) is a deliberate write to that profile; skip the
+			// add/override menu.
+			if !target.explicit && currentLoggedInUserDetails.IsUserLoggedIn && !currentLoggedInUserDetails.LoginExpired && len(currentLoggedInUserDetails.UserCredentials.PrivateKey) != 0 {
+				shouldOverride, err := userLoginMenu(currentLoggedInUserDetails.UserCredentials.Email)
+				if err != nil {
+					util.HandleError(err)
+				}
+
+				if !shouldOverride {
+					return
+				}
+			}
+
+			domainFlagExplicitlySet := cmd.Flags().Changed("domain")
+			_, domainEnvName, _ := util.GetEnvDomainSource()
+			_, validDomainFromFile := util.GetDomainFromFile()
+			domainSource := presetDomainSourceLabel(domainFlagExplicitlySet, domainEnvName, validDomainFromFile)
+			shouldPrintInfo := !silentMode && !plainOutput
+			printPresetDomainInfo := shouldPrintInfo
+
+			// Signing back in to a profile keeps it on its instance: the stored
+			// domain stands in for the flag, so no hosting prompt appears, and an
+			// explicitly requested different instance is refused rather than
+			// silently moving the profile there.
+			if target.reauth && target.profile.Domain != "" {
+				profileDomain := util.AppendAPIEndpoint(target.profile.Domain)
+				if config.INFISICAL_DOMAIN_EXPLICITLY_SET && util.AppendAPIEndpoint(presetDomain) != profileDomain {
+					util.PrintErrorMessageAndExit(fmt.Sprintf("Profile '%s' belongs to %s, but %s was requested. Sign in there as a new profile with --save-as <name>, or move this profile with [infisical user update domain].",
+						target.name, util.DisplayDomain(profileDomain), util.DisplayDomain(presetDomain)))
+				}
+				presetDomain = profileDomain
+				domainSource = fmt.Sprintf("profile '%s'", target.name)
+				printPresetDomainInfo = false
+				if shouldPrintInfo {
+					util.PrintlnStderr(fmt.Sprintf("Signing back in to profile '%s' on %s.", target.name, util.DisplayDomain(profileDomain)))
+				}
+			}
+
+			usePresetDomain, err := usePresetDomain(presetDomain, domainSource, printPresetDomainInfo)
+
+			if err != nil {
+				util.HandleError(err)
+			}
+
+			//override domain
+			domainQuery := true
+			if config.INFISICAL_URL_MANUAL_OVERRIDE != "" &&
+				config.INFISICAL_URL_MANUAL_OVERRIDE != fmt.Sprintf("%s/api", util.INFISICAL_DEFAULT_EU_URL) &&
+				config.INFISICAL_URL_MANUAL_OVERRIDE != fmt.Sprintf("%s/api", util.INFISICAL_DEFAULT_US_URL) &&
+				!usePresetDomain &&
+				!isDirectUserLoginFlagsAndEnvsSet {
+				overrideDomain, err := DomainOverridePrompt()
+				if err != nil {
+					util.HandleError(err)
+				}
+
+				//if not override set INFISICAL_URL to exported var
+				//set domainQuery to false
+				if !overrideDomain && !usePresetDomain {
+					domainQuery = false
+					config.INFISICAL_URL = util.AppendAPIEndpoint(config.INFISICAL_URL_MANUAL_OVERRIDE)
+					config.INFISICAL_LOGIN_URL = fmt.Sprintf("%s/login", strings.TrimSuffix(config.INFISICAL_URL, "/api"))
+				}
+
+			}
+
+			if !usePresetDomain {
+				// if the command is being executed directly with --email and --password, use the preset domain without prompting
+				if isDirectUserLoginFlagsAndEnvsSet {
+					setDomainConfig(strings.TrimSuffix(presetDomain, "/api"))
+				} else if domainQuery {
+					//prompt user to select domain between Infisical cloud and self-hosting
+					err = askForDomain()
+					if err != nil {
+						util.HandleError(err, "Unable to parse domain url")
+					}
+				}
+			}
+
+			var userCredentialsToBeStored models.UserCredentials
+
+			interactiveLogin := cmd.Flags().Changed("interactive")
+			useBrowserLogin := !interactiveLogin && !isDirectUserLoginFlagsAndEnvsSet
+
+			if useBrowserLogin {
+				userCredentialsToBeStored, err = browserCliLogin()
+				if err != nil {
+					util.PrintfStderr("Login via browser failed. %s\n", err.Error())
+					useBrowserLogin = false
+				}
+			}
+
+			// if not using browser login or if the browser login failed, get login credentials from command line or environment variables
+			if !useBrowserLogin {
+				email, password, err := getLoginCredentials(cmd, isDirectUserLoginFlagsAndEnvsSet)
+				if err != nil {
+					util.HandleError(err)
+				}
+
+				// The account is known before the profile's organization is
+				// applied below, so refuse the mismatch here rather than
+				// authenticating and then asking for a token in an organization
+				// this account cannot reach.
+				exitOnLoginAccountMismatch(target, email)
+
+				var organizationId string
+
+				// Signing back in to a profile keeps its organization, so the
+				// profile supplies the default and neither the flag nor the
+				// picker is needed; an explicit --organization-id still wins.
+				profileOrgID := ""
+				if target.reauth {
+					profileOrgID = target.profile.ScopedOrganizationID()
+				}
+
+				if isDirectUserLoginFlagsAndEnvsSet {
+					if profileOrgID != "" {
+						organizationId, err = util.GetCmdFlagOrEnvWithDefaultValue(cmd, "organization-id", []string{"INFISICAL_ORGANIZATION_ID"}, profileOrgID)
+					} else {
+						organizationId, err = util.GetCmdFlagOrEnv(cmd, "organization-id", []string{"INFISICAL_ORGANIZATION_ID"})
+					}
+					if err != nil {
+						util.HandleError(err)
+					}
+				} else if organizationId == "" {
+					organizationId = profileOrgID
+				}
+
+				cliDefaultLogin(&userCredentialsToBeStored, email, password, organizationId)
+			}
+
+			// The browser flow only learns the account once the session comes
+			// back, so check here too: re-scoping below asks the server for a
+			// token in the profile's organization, which an account that is not
+			// the profile's own cannot reach.
+			exitOnLoginAccountMismatch(target, userCredentialsToBeStored.Email)
+
+			// The browser flow scopes the session to whatever organization the
+			// browser had selected. Signing back in to a profile keeps its
+			// organization, so re-scope the session when the two differ.
+			if wantOrg := target.profile.ScopedOrganizationID(); target.reauth && wantOrg != "" {
+				gotOrg, gotSubOrg := util.ParseTokenOrgClaims(userCredentialsToBeStored.JTWToken)
+				if gotSubOrg != "" {
+					gotOrg = gotSubOrg
+				}
+				if gotOrg != wantOrg {
+					rescopedToken, err := selectOrganizationToken(userCredentialsToBeStored.JTWToken, userCredentialsToBeStored.Email, wantOrg)
+					if err != nil {
+						util.HandleError(err, fmt.Sprintf("Unable to scope the session to the organization of profile '%s'. Run [infisical login] without --profile to pick another organization.", target.name))
+					}
+					userCredentialsToBeStored.JTWToken = rescopedToken
+				}
+			}
+
+			orgID, subOrgID := util.ParseTokenOrgClaims(userCredentialsToBeStored.JTWToken)
+			orgInfo := util.DescribeSessionOrg(userCredentialsToBeStored.JTWToken, orgID, subOrgID)
+			orgName := orgInfo.DisplayName()
+
+			profileName := target.name
+			if profileName == "" {
+				// The profile is identified by the organization the session acts
+				// in, which is the sub-organization when there is one.
+				scopedOrgID := orgID
+				if subOrgID != "" {
+					scopedOrgID = subOrgID
+				}
+				profileName = util.DeriveProfileName(existingConfig, userCredentialsToBeStored.Email, config.INFISICAL_URL, scopedOrgID, orgName, orgInfo.Slug)
+			}
+
+			// A --save-as onto an existing profile, or a derived name that lands
+			// on one, replaces whose session it holds. Signing back in with
+			// --profile is refused earlier instead, before the session is
+			// re-scoped.
+			if existingProfile, found := util.FindProfile(existingConfig, profileName); found && existingProfile.Email != userCredentialsToBeStored.Email {
+				util.PrintWarning(fmt.Sprintf("Profile '%s' previously stored the session for %s and now stores the session for %s.", profileName, existingProfile.Email, userCredentialsToBeStored.Email))
+			}
+
+			// A login that names its profile (--save-as, or --profile) is a scoped
+			// write: it must not move the global default out from under other
+			// terminals that rely on it. This also keeps expired-session renewals
+			// (which re-exec login with --profile) from stealing the default.
+			// Untargeted logins keep the familiar "last login wins" behavior.
+			makeActive := !target.explicit
+
+			err = util.PersistLoginProfile(models.Profile{
+				Name:              profileName,
+				Email:             userCredentialsToBeStored.Email,
+				Domain:            config.INFISICAL_URL,
+				OrganizationID:    orgID,
+				OrganizationName:  orgName,
+				OrganizationSlug:  orgInfo.Slug,
+				SubOrganizationID: subOrgID,
+			}, &userCredentialsToBeStored, makeActive)
+			if err != nil {
+				log.Error().Msgf("Unable to store your credentials in system vault")
+				log.Error().Msgf("\nTo trouble shoot further, read https://infisical.com/docs/cli/faq")
+				log.Debug().Err(err)
+				//return here
+				util.HandleError(err)
+			}
+
+			// Identify the user in PostHog and alias the anonymous machine ID
+			// so that pre-login CLI events are merged into the same person record.
+			// This call is idempotent (gated on LastIdentifiedEmail in the config),
+			// and CaptureEvent below will also invoke it as a safety net for users
+			// who are already logged in on older CLIs that predate IdentifyUser.
+			Telemetry.IdentifyUserIfNeeded()
+
+			// clear backed up secrets from prev account
+			util.DeleteBackupSecrets()
+
+			// Capture login event and flush the PostHog client (including Identify/Alias
+			// events enqueued by IdentifyUser above). This must run before any early
+			// returns so that all enqueued events are flushed via CaptureEvent's Close().
+			Telemetry.CaptureEvent("cli-command:login", posthog.NewProperties().Set("infisical-backend", config.INFISICAL_URL).Set("version", util.CLI_VERSION))
+
+			if plainOutput {
+				util.PrintlnStdout(userCredentialsToBeStored.JTWToken)
+				return
+			}
+
+			whilte := color.New(color.FgGreen)
+			boldWhite := whilte.Add(color.Bold)
+			time.Sleep(time.Second * 1)
+			boldWhite.Printf(">>>> Welcome to Infisical!")
+			boldWhite.Printf(" You are now logged in as %v <<<< \n", userCredentialsToBeStored.Email)
+
+			orgDetail := ""
+			if orgName != "" {
+				orgDetail = fmt.Sprintf(" (org %s)", orgName)
+			}
+			switch {
+			case target.reauth:
+				util.PrintlnStderr(fmt.Sprintf("Signed back in to profile '%s'%s.", profileName, orgDetail))
+			case profileName != userCredentialsToBeStored.Email:
+				util.PrintlnStderr(fmt.Sprintf("Session saved to profile '%s'%s. Select it with --profile %s or INFISICAL_PROFILE=%s.", profileName, orgDetail, profileName, profileName))
+			}
+			if configAfterLogin, err := util.GetConfigFile(); err == nil && configAfterLogin.ActiveProfile != "" && configAfterLogin.ActiveProfile != profileName {
+				util.PrintlnStderr(fmt.Sprintf("Your default profile remains '%s'; terminals using it are unaffected. Run [infisical profile use %s] to make '%s' the default.", configAfterLogin.ActiveProfile, profileName, profileName))
+			}
+
+			plainBold := color.New(color.Bold)
+
+			plainBold.Println("\nQuick links")
+			util.PrintlnStderr("- Learn to inject secrets into your application at https://infisical.com/docs/cli/usage")
+			util.PrintlnStderr("- Stuck? Join our slack for quick support https://infisical.com/slack")
+		} else {
+			sdkAuthenticator := util.NewSdkAuthenticator(infisicalClient, cmd)
+
+			authStrategies := map[util.AuthStrategyType]func() (credential infisicalSdk.MachineIdentityCredential, e error){
+				util.AuthStrategy.UNIVERSAL_AUTH:    sdkAuthenticator.HandleUniversalAuthLogin,
+				util.AuthStrategy.KUBERNETES_AUTH:   sdkAuthenticator.HandleKubernetesAuthLogin,
+				util.AuthStrategy.AZURE_AUTH:        sdkAuthenticator.HandleAzureAuthLogin,
+				util.AuthStrategy.GCP_ID_TOKEN_AUTH: sdkAuthenticator.HandleGcpIdTokenAuthLogin,
+				util.AuthStrategy.GCP_IAM_AUTH:      sdkAuthenticator.HandleGcpIamAuthLogin,
+				util.AuthStrategy.AWS_IAM_AUTH:      sdkAuthenticator.HandleAwsIamAuthLogin,
+				util.AuthStrategy.OIDC_AUTH:         sdkAuthenticator.HandleOidcAuthLogin,
+				util.AuthStrategy.JWT_AUTH:          sdkAuthenticator.HandleJwtAuthLogin,
+			}
+
+			credential, err := authStrategies[strategy]()
+
+			if err != nil {
+				domainHint := ""
+				currentDomain := strings.TrimSuffix(config.INFISICAL_URL, "/api")
+				errMsg := err.Error()
+
+				if strings.Contains(errMsg, "status-code=401") || strings.Contains(errMsg, "status-code=403") {
+					domainHint = fmt.Sprintf("\n\nCheck your credentials or verify you're using the correct domain. Current domain: %s", currentDomain)
+				}
+
+				util.HandleError(fmt.Errorf("unable to authenticate with %s [err=%v].%s", formatAuthMethod(loginMethod), err, domainHint))
+			}
+
+			if plainOutput {
+				util.PrintlnStdout(credential.AccessToken)
+				return
+			}
+
+			boldGreen := color.New(color.FgGreen).Add(color.Bold)
+			boldPlain := color.New(color.Bold)
+			time.Sleep(time.Second * 1)
+			boldGreen.Printf(">>>> Successfully authenticated with %s!\n\n", formatAuthMethod(loginMethod))
+			boldPlain.Printf("Access Token:\n%v", credential.AccessToken)
+
+			plainBold := color.New(color.Bold)
+			plainBold.Println("\n\nYou can use this access token to authenticate through other commands in the CLI.")
+
+		}
+	},
+}
+
+func cliDefaultLogin(userCredentialsToBeStored *models.UserCredentials, email string, password string, organizationId string) {
+	loginV3Response, err := getFreshUserCredentials(email, password)
+	var getOrganizationIdAccessToken string
+
+	if err == nil {
+		getOrganizationIdAccessToken = loginV3Response.AccessToken
+	} else {
+		log.Info().Msg("Unable to authenticate with the provided credentials, falling back to SRP authentication")
+
+		_, loginTwoResponse, err := getFreshUserCredentialsWithSrp(email, password)
+		if err != nil {
+			util.PrintlnStderr("Unable to authenticate with the provided credentials, please try again")
+			log.Debug().Err(err)
+			//return here
+			util.HandleError(err)
+		}
+
+		if loginTwoResponse.MfaEnabled {
+			i := 1
+			for i <= mfaMaxAttempts {
+				mfaVerifyCode := askForMFACode("email")
+
+				httpClient, err := util.GetRestyClientWithCustomHeaders()
+				if err != nil {
+					util.HandleError(err, "Unable to get resty client with custom headers")
+				}
+				httpClient.SetAuthToken(loginTwoResponse.Token)
+				verifyMFAresponse, mfaErrorResponse, requestError := api.CallVerifyMfaToken(httpClient, api.VerifyMfaTokenRequest{
+					Email:    email,
+					MFAToken: mfaVerifyCode,
+				})
+
+				if requestError != nil {
+					util.HandleError(err)
+					break
+				} else if mfaErrorResponse != nil {
+					if mfaErrorResponse.Context.Code == "mfa_invalid" {
+						msg := fmt.Sprintf("Incorrect, verification code. You have %v attempts left", mfaMaxAttempts-i)
+						util.PrintlnStderr(msg)
+						if i == mfaMaxAttempts {
+							util.PrintErrorMessageAndExit("No tries left, please try again in a bit")
+							break
+						}
+					}
+
+					if mfaErrorResponse.Context.Code == "mfa_expired" {
+						util.PrintErrorMessageAndExit("Your 2FA verification code has expired, please try logging in again")
+						break
+					}
+					i++
+				} else {
+					loginTwoResponse.EncryptedPrivateKey = verifyMFAresponse.EncryptedPrivateKey
+					loginTwoResponse.EncryptionVersion = verifyMFAresponse.EncryptionVersion
+					loginTwoResponse.Iv = verifyMFAresponse.Iv
+					loginTwoResponse.ProtectedKey = verifyMFAresponse.ProtectedKey
+					loginTwoResponse.ProtectedKeyIV = verifyMFAresponse.ProtectedKeyIV
+					loginTwoResponse.ProtectedKeyTag = verifyMFAresponse.ProtectedKeyTag
+					loginTwoResponse.PublicKey = verifyMFAresponse.PublicKey
+					loginTwoResponse.Tag = verifyMFAresponse.Tag
+					loginTwoResponse.Token = verifyMFAresponse.Token
+					loginTwoResponse.EncryptionVersion = verifyMFAresponse.EncryptionVersion
+
+					break
+				}
+			}
+		}
+
+		getOrganizationIdAccessToken = loginTwoResponse.Token
+	}
+
+	// TODO(daniel): At a later time we should re-add this check, but we don't want to break older Infisical instances that doesn't have the latest SRP removal initiative on them.
+	// if !strings.Contains(err.Error(), "LegacyEncryptionScheme") {
+	// 	util.HandleError(err)
+	// }
+
+	// Login is successful so ask user to choose organization
+	newJwtToken := GetJwtTokenWithOrganizationId(getOrganizationIdAccessToken, email, organizationId)
+
+	//updating usercredentials
+	userCredentialsToBeStored.Email = email
+	userCredentialsToBeStored.PrivateKey = ""
+	userCredentialsToBeStored.JTWToken = newJwtToken
+}
+
+func setDomainConfig(domain string) {
+	config.INFISICAL_URL = fmt.Sprintf("%s/api", domain)
+	config.INFISICAL_LOGIN_URL = fmt.Sprintf("%s/login", domain)
+}
+
+func init() {
+	RootCmd.AddCommand(loginCmd)
+	loginCmd.Flags().Bool("clear-domains", false, "clear all self-hosting domains from the config file")
+	loginCmd.Flags().BoolP("interactive", "i", false, "login via the command line")
+	loginCmd.Flags().Bool("plain", false, "only output the token without any formatting")
+	loginCmd.Flags().String("method", "user", "login method [user, universal-auth, kubernetes, azure, gcp-id-token, gcp-iam, aws-iam, oidc-auth]")
+	loginCmd.Flags().String("client-id", "", "client id for universal auth")
+	loginCmd.Flags().String("client-secret", "", "client secret for universal auth")
+	loginCmd.Flags().String("organization-slug", "", "When set for machine identity login, this will scope the login session to the specified sub-organization the machine identity has access to. If left empty, the session defaults to the organization where the machine identity was created in.")
+	loginCmd.Flags().String("machine-identity-id", "", "machine identity id for these login methods [kubernetes, azure, gcp-id-token, gcp-iam, aws-iam]")
+	loginCmd.Flags().String("service-account-token-path", "", "service account token path for kubernetes auth")
+	loginCmd.Flags().String("service-account-key-file-path", "", "service account key file path for GCP IAM auth")
+	loginCmd.Flags().String("jwt", "", "jwt for jwt-based login methods [oidc-auth, jwt-auth]")
+	loginCmd.Flags().String("oidc-jwt", "", "JWT for OIDC authentication. Deprecated, use --jwt instead")
+	loginCmd.Flags().String("email", "", "email for 'user' login method")
+	loginCmd.Flags().String("password", "", "password for 'user' login method")
+	loginCmd.Flags().String("organization-id", "", "organization id for 'user' login method")
+	loginCmd.Flags().String("save-as", "", "store this login as the named profile, creating it or replacing its session ('user' login method). Use --profile to sign back in to an existing profile instead.")
+
+	loginCmd.Flags().MarkDeprecated("oidc-jwt", "use --jwt instead")
+
+}
+
+func DomainOverridePrompt() (bool, error) {
+	const (
+		PRESET   = "Use Domain"
+		OVERRIDE = "Change Domain"
+	)
+
+	options := []string{PRESET, OVERRIDE}
+	//trim the '/' from the end of the domain url
+	config.INFISICAL_URL_MANUAL_OVERRIDE = strings.TrimRight(config.INFISICAL_URL_MANUAL_OVERRIDE, "/")
+	optionsPrompt := promptui.Select{
+		Label: fmt.Sprintf("Current Domain Override: %s", config.INFISICAL_URL_MANUAL_OVERRIDE),
+		Items: options,
+		Size:  2,
+	}
+
+	_, selectedOption, err := optionsPrompt.Run()
+	if err != nil {
+		return false, err
+	}
+
+	return selectedOption == OVERRIDE, err
+}
+
+func normalizePresetDomain(presetDomain string) string {
+	return strings.TrimSuffix(strings.TrimRight(presetDomain, "/"), "/api")
+}
+
+func shouldApplyPresetDomain(parsedDomain string, domainSource string) bool {
+	if parsedDomain == "" {
+		return false
+	}
+	if domainSource != "" {
+		return true
+	}
+	return parsedDomain != util.INFISICAL_DEFAULT_US_URL && parsedDomain != util.INFISICAL_DEFAULT_EU_URL
+}
+
+func presetDomainSourceLabel(domainFlagExplicitlySet bool, domainEnvName string, domainFromProjectFile bool) string {
+	if domainFlagExplicitlySet {
+		return "--domain flag"
+	}
+	if domainEnvName != "" {
+		return fmt.Sprintf("%s environment variable", domainEnvName)
+	}
+	if domainFromProjectFile {
+		return "configuration"
+	}
+	return ""
+}
+
+func usePresetDomain(presetDomain string, domainSource string, shouldPrintInfo bool) (bool, error) {
+	infisicalConfig, err := util.GetConfigFile()
+	if err != nil {
+		return false, fmt.Errorf("askForDomain: unable to get config file because [err=%s]", err)
+	}
+
+	parsedDomain := normalizePresetDomain(presetDomain)
+
+	if shouldApplyPresetDomain(parsedDomain, domainSource) {
+		_, err := url.ParseRequestURI(parsedDomain)
+		if err != nil {
+			return false, fmt.Errorf("Invalid domain URL: '%s'", parsedDomain)
+		}
+
+		config.INFISICAL_URL = fmt.Sprintf("%s/api", parsedDomain)
+		config.INFISICAL_LOGIN_URL = fmt.Sprintf("%s/login", parsedDomain)
+
+		// Only save non-cloud domains to the config file
+		if parsedDomain != util.INFISICAL_DEFAULT_US_URL && parsedDomain != util.INFISICAL_DEFAULT_EU_URL {
+			if !slices.Contains(infisicalConfig.Domains, parsedDomain) {
+				infisicalConfig.Domains = append(infisicalConfig.Domains, parsedDomain)
+				err = util.WriteConfigFile(&infisicalConfig)
+
+				if err != nil {
+					return false, fmt.Errorf("askForDomain: unable to write domains to config file because [err=%s]", err)
+				}
+			}
+		}
+
+		if shouldPrintInfo {
+			whilte := color.New(color.FgGreen)
+			boldWhite := whilte.Add(color.Bold)
+			time.Sleep(time.Second * 1)
+			boldWhite.Printf("[INFO] Using domain '%s' from %s\n", parsedDomain, domainSource)
+		}
+
+		return true, nil
+	}
+
+	return false, nil
+}
+
+func askForDomain() error {
+	// query user to choose between Infisical cloud or self-hosting
+	const (
+		INFISICAL_CLOUD_US = "Infisical Cloud (US Region)"
+		INFISICAL_CLOUD_EU = "Infisical Cloud (EU Region)"
+		SELF_HOSTING       = "Self-Hosting or Dedicated Instance"
+		ADD_NEW_DOMAIN     = "Add a new domain"
+	)
+
+	options := []string{INFISICAL_CLOUD_US, INFISICAL_CLOUD_EU, SELF_HOSTING}
+	optionsPrompt := promptui.Select{
+		Label: "Select your hosting option",
+		Items: options,
+		Size:  3,
+	}
+
+	_, selectedHostingOption, err := optionsPrompt.Run()
+	if err != nil {
+		return err
+	}
+
+	if selectedHostingOption == INFISICAL_CLOUD_US {
+		setDomainConfig(util.INFISICAL_DEFAULT_US_URL)
+		return nil
+	} else if selectedHostingOption == INFISICAL_CLOUD_EU {
+		setDomainConfig(util.INFISICAL_DEFAULT_EU_URL)
+		return nil
+	}
+
+	infisicalConfig, err := util.GetConfigFile()
+	if err != nil {
+		return fmt.Errorf("askForDomain: unable to get config file because [err=%s]", err)
+	}
+
+	if len(infisicalConfig.Domains) > 0 {
+		// If domains are present in the config, let the user select from the list or select to add a new domain
+
+		items := append(infisicalConfig.Domains, ADD_NEW_DOMAIN)
+
+		prompt := promptui.Select{
+			Label: "Which domain would you like to use?",
+			Items: items,
+			Size:  5,
+		}
+
+		_, selectedOption, err := prompt.Run()
+		if err != nil {
+			return err
+		}
+
+		if selectedOption != ADD_NEW_DOMAIN {
+			setDomainConfig(selectedOption)
+			return nil
+
+		}
+
+	}
+
+	domainPrompt := promptui.Prompt{
+		Label:    "Domain",
+		Validate: validateURLInput,
+		Default:  "Example - https://my-self-hosted-instance.com",
+	}
+
+	domain, err := domainPrompt.Run()
+	if err != nil {
+		return err
+	}
+
+	err = trimAndWriteCustomDomainToConfig(domain, &infisicalConfig)
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func getLoginCredentials(cmd *cobra.Command, directUserLoginFlags bool) (email string, password string, err error) {
+	if directUserLoginFlags {
+		email, err = util.GetCmdFlagOrEnv(cmd, "email", []string{"INFISICAL_EMAIL"})
+		if err != nil {
+			return "", "", err
+		}
+
+		err = validateEmailInput(email)
+		if err != nil {
+			return "", "", err
+		}
+
+		password, err = util.GetCmdFlagOrEnv(cmd, "password", []string{"INFISICAL_PASSWORD"})
+		if err != nil {
+			return "", "", err
+		}
+
+		return email, password, nil
+	}
+
+	email, password, err = askForLoginCredentials()
+	if err != nil {
+		return "", "", fmt.Errorf("unable to parse email and password for authentication: %w", err)
+	}
+	return email, password, nil
+}
+
+func askForLoginCredentials() (email string, password string, err error) {
+	util.PrintlnStderr("Enter Credentials...")
+	emailPrompt := promptui.Prompt{
+		Label:    "Email",
+		Validate: validateEmailInput,
+	}
+
+	userEmail, err := emailPrompt.Run()
+
+	if err != nil {
+		return "", "", err
+	}
+
+	passwordPrompt := promptui.Prompt{
+		Label:    "Password",
+		Validate: validatePasswordInput,
+		Mask:     '*',
+	}
+
+	userPassword, err := passwordPrompt.Run()
+
+	if err != nil {
+		return "", "", err
+	}
+
+	return userEmail, userPassword, nil
+}
+
+func getFreshUserCredentials(email string, password string) (*api.GetLoginV3Response, error) {
+	log.Debug().Msg(fmt.Sprint("getFreshUserCredentials: ", "email", email, "password: ", password))
+	httpClient, err := util.GetRestyClientWithCustomHeaders()
+	if err != nil {
+		return nil, err
+	}
+
+	loginV3Response, err := api.CallLoginV3(httpClient, api.GetLoginV3Request{
+		Email:    email,
+		Password: password,
+	})
+
+	if err != nil {
+		return nil, err
+	}
+
+	return &loginV3Response, nil
+}
+
+func getFreshUserCredentialsWithSrp(email string, password string) (*api.GetLoginOneV2Response, *api.GetLoginTwoV2Response, error) {
+	log.Debug().Msg(fmt.Sprint("getFreshUserCredentials: ", "email", email, "password: ", password))
+	httpClient, err := util.GetRestyClientWithCustomHeaders()
+	if err != nil {
+		return nil, nil, err
+	}
+
+	params := srp.GetParams(4096)
+	secret1 := srp.GenKey()
+	srpClient := srp.NewClient(params, []byte(email), []byte(password), secret1)
+	srpA := hex.EncodeToString(srpClient.ComputeA())
+
+	// ** Login one
+	loginOneResponseResult, err := api.CallLogin1V2(httpClient, api.GetLoginOneV2Request{
+		Email:           email,
+		ClientPublicKey: srpA,
+	})
+
+	if err != nil {
+		return nil, nil, err
+	}
+
+	// **** Login 2
+	serverPublicKey_bytearray, err := hex.DecodeString(loginOneResponseResult.ServerPublicKey)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	userSalt, err := hex.DecodeString(loginOneResponseResult.Salt)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	srpClient.SetSalt(userSalt, []byte(email), []byte(password))
+	srpClient.SetB(serverPublicKey_bytearray)
+
+	srpM1 := srpClient.ComputeM1()
+
+	loginTwoResponseResult, err := api.CallLogin2V2(httpClient, api.GetLoginTwoV2Request{
+		Email:       email,
+		ClientProof: hex.EncodeToString(srpM1),
+		Password:    password,
+	})
+
+	if err != nil {
+		util.HandleError(err)
+	}
+
+	return &loginOneResponseResult, &loginTwoResponseResult, nil
+}
+
+func GetJwtTokenWithOrganizationId(oldJwtToken string, email string, organizationId string) string {
+	log.Debug().Msg(fmt.Sprint("GetJwtTokenWithOrganizationId: ", "oldJwtToken", oldJwtToken))
+
+	selectedOrganizationId := organizationId
+
+	if selectedOrganizationId == "" {
+		httpClient, err := util.GetRestyClientWithCustomHeaders()
+		if err != nil {
+			util.HandleError(err, "Unable to get resty client with custom headers")
+		}
+		httpClient.SetAuthToken(oldJwtToken)
+
+		selectedOrganizationId, _, err = pickOrganization(httpClient, "Which Infisical organization would you like to log into?", email)
+		if err != nil {
+			util.HandleError(err, "Unable to select organization")
+		}
+	}
+
+	// The exchange, MFA prompt included, is shared with [profile set-org] and
+	// [profile create], so the flows cannot drift apart.
+	token, err := selectOrganizationToken(oldJwtToken, email, selectedOrganizationId)
+	if err != nil {
+		util.HandleError(err, "Unable to select organization")
+	}
+
+	return token
+}
+
+// loginTarget says which profile a login writes to and how it was chosen.
+type loginTarget struct {
+	// name is empty when the profile is derived from the account after login.
+	name string
+	// reauth is true when --profile named an existing profile, which is signed
+	// back in to: same account, same instance, same organization.
+	reauth  bool
+	profile models.Profile
+	// explicit is true when the user named the profile with either flag, which
+	// makes the login a scoped write that leaves the machine default alone.
+	explicit bool
+}
+
+// resolveLoginTarget applies the two ways to name a profile on login. --save-as
+// stores the login under that name, creating the profile or replacing its
+// session. --profile (or INFISICAL_PROFILE) signs back in to a profile that
+// already exists; naming a missing one is refused rather than quietly creating
+// it, since everywhere else --profile only selects. An ambient INFISICAL_PROFILE
+// does not conflict with --save-as, but the two flags naming different
+// profiles do.
+func resolveLoginTarget(saveAs string, override string, overrideSource string, configFile models.ConfigFile) (loginTarget, error) {
+	if saveAs != "" {
+		if err := util.ValidateProfileName(saveAs); err != nil {
+			return loginTarget{}, err
+		}
+		if overrideSource == util.ProfileSourceFlag && override != saveAs {
+			return loginTarget{}, fmt.Errorf("--profile and --save-as name different profiles ('%s' and '%s'). Use --profile to sign back in to an existing profile, or --save-as to store this login under a name, not both", override, saveAs)
+		}
+		return loginTarget{name: saveAs, explicit: true}, nil
+	}
+
+	if override == "" {
+		return loginTarget{}, nil
+	}
+
+	profile, found := util.FindProfile(configFile, override)
+	if !found {
+		return loginTarget{}, fmt.Errorf("profile '%s' (selected via %s) does not exist. --profile signs back in to an existing profile; to store this login under that name run [infisical login --save-as %s]", override, overrideSource, override)
+	}
+	return loginTarget{name: override, reauth: true, profile: profile, explicit: true}, nil
+}
+
+// loginAccountMismatch reports whether a login that signs back in to a profile
+// authenticated as somebody other than the profile's own account. Only --profile
+// asserts an account; --save-as names where to store whoever signs in, and a
+// derived name cannot mismatch because it follows the account.
+// exitOnLoginAccountMismatch refuses a login that signs back in to a profile as
+// somebody else. Both login paths check as soon as the account is known, which
+// is before either of them applies the profile's organization.
+func exitOnLoginAccountMismatch(target loginTarget, signedInEmail string) {
+	if !loginAccountMismatch(target, signedInEmail) {
+		return
+	}
+	util.PrintErrorMessageAndExit(fmt.Sprintf("Profile '%s' belongs to %s, but you signed in as %s. Nothing was stored. To keep this login, run [infisical login --save-as <name>] with another name.", target.name, target.profile.Email, signedInEmail))
+}
+
+func loginAccountMismatch(target loginTarget, signedInEmail string) bool {
+	if !target.reauth || target.profile.Email == "" || signedInEmail == "" {
+		return false
+	}
+	return target.profile.Email != signedInEmail
+}
+
+func userLoginMenu(currentLoggedInUserEmail string) (bool, error) {
+	label := fmt.Sprintf("Current logged in user email: %s on domain: %s", currentLoggedInUserEmail, config.INFISICAL_URL)
+
+	prompt := promptui.Select{
+		Label: label,
+		Items: []string{ADD_USER, REPLACE_USER, EXIT_USER_MENU},
+	}
+	_, result, err := prompt.Run()
+	if err != nil {
+		return false, err
+	}
+	return result != EXIT_USER_MENU, err
+}
+
+func askForMFACode(mfaMethod string) string {
+	var label string
+	if mfaMethod == "totp" {
+		label = "Enter the verification code from your mobile authenticator app or use a recovery code"
+	} else {
+		label = "Enter the 2FA verification code sent to your email"
+	}
+	mfaCodePromptUI := promptui.Prompt{
+		Label: label,
+	}
+
+	mfaVerifyCode, err := mfaCodePromptUI.Run()
+	if err != nil {
+		util.HandleError(err)
+	}
+
+	return mfaVerifyCode
+}
+
+func askToPasteJwtToken(success chan models.UserCredentials, failure chan error) {
+	time.Sleep(time.Second * 5)
+	util.PrintlnStderr("\n\nOnce login is completed via browser, the CLI should be authenticated automatically.")
+	util.PrintlnStderr("However, if browser fails to communicate with the CLI, please paste the token from the browser below.")
+
+	util.PrintStderr("\n\nPaste your browser token here: ")
+	bytePassword, err := term.ReadPassword(int(os.Stdin.Fd()))
+	if err != nil {
+		failure <- err
+		util.PrintlnStderr("\nError reading input:", err)
+		os.Exit(1)
+	}
+
+	infisicalPastedToken := strings.TrimSpace(string(bytePassword))
+
+	userCredentials, err := decodePastedBase64Token(infisicalPastedToken)
+	if err != nil {
+		failure <- err
+		util.PrintlnStderr("Invalid user credentials provided", err)
+		os.Exit(1)
+	}
+
+	// verify JTW
+	httpClient, err := util.GetRestyClientWithCustomHeaders()
+	if err != nil {
+		failure <- err
+		util.PrintlnStderr("Error getting resty client with custom headers", err)
+		os.Exit(1)
+	}
+
+	httpClient.
+		SetAuthToken(userCredentials.JTWToken).
+		SetHeader("Accept", "application/json")
+
+	isAuthenticated := api.CallIsAuthenticated(httpClient)
+	if !isAuthenticated {
+		util.PrintlnStderr("Invalid user credentials provided", err)
+		failure <- err
+		os.Exit(1)
+	}
+
+	success <- *userCredentials
+}
+
+func decodePastedBase64Token(token string) (*models.UserCredentials, error) {
+	data, err := base64.StdEncoding.DecodeString(token)
+	if err != nil {
+		return nil, err
+	}
+	var loginResponse models.UserCredentials
+
+	err = json.Unmarshal(data, &loginResponse)
+	if err != nil {
+		return nil, err
+	}
+
+	return &loginResponse, nil
+}
+
+// Manages the browser login flow.
+// Returns a UserCredentials object on success and an error on failure
+func browserCliLogin() (models.UserCredentials, error) {
+	SERVER_TIMEOUT := 10 * 60
+
+	//create listener
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		return models.UserCredentials{}, err
+	}
+
+	//get callback port
+	callbackPort := listener.Addr().(*net.TCPAddr).Port
+	url := fmt.Sprintf("%s?callback_port=%d", config.INFISICAL_LOGIN_URL, callbackPort)
+
+	defaultPrintStatement := fmt.Sprintf("\n\nTo complete your login, open this address in your browser: %v \n", url)
+
+	if runtime.GOOS == "darwin" || runtime.GOOS == "windows" {
+		if err := browser.OpenURL(url); err != nil {
+			util.PrintStderr(defaultPrintStatement)
+		} else {
+			util.PrintfStderr("\n\nPlease proceed to your browser to complete the login process.\nIf the browser doesn't open automatically, please open this address in your browser: %v \n", url)
+		}
+	} else {
+		util.PrintStderr(defaultPrintStatement)
+	}
+
+	//flow channels
+	success := make(chan models.UserCredentials)
+	failure := make(chan error)
+	timeout := time.After(time.Second * time.Duration(SERVER_TIMEOUT))
+
+	// Skip in non-TTY (like an agent) so term.GetState doesn't fail
+	stdinIsTTY := isatty.IsTerminal(os.Stdin.Fd())
+	if stdinIsTTY {
+		oldState, err := term.GetState(int(os.Stdin.Fd()))
+		if err != nil {
+			return models.UserCredentials{}, err
+		}
+		defer restoreTerminal(oldState)
+	}
+
+	//create handler
+	c := cors.New(cors.Options{
+		AllowedOrigins:   []string{strings.ReplaceAll(config.INFISICAL_LOGIN_URL, "/login", "")},
+		AllowCredentials: true,
+		AllowedMethods:   []string{"POST", "OPTIONS"},
+		AllowedHeaders:   []string{"Content-Type"},
+		Debug:            false,
+	})
+	corsHandler := c.Handler(browserLoginHandler(success, failure))
+
+	log.Debug().Msgf("Callback server listening on port %d", callbackPort)
+
+	go http.Serve(listener, corsHandler)
+	// Skip in non-TTY (like an agent)
+	if stdinIsTTY {
+		go askToPasteJwtToken(success, failure)
+	}
+
+	for {
+		select {
+		case loginResponse := <-success:
+			_ = closeListener(&listener)
+			util.PrintlnStderr("\n\nBrowser login successful")
+			return loginResponse, nil
+
+		case err := <-failure:
+			serverErr := closeListener(&listener)
+			return models.UserCredentials{}, errors.Join(err, serverErr)
+
+		case <-timeout:
+			_ = closeListener(&listener)
+			return models.UserCredentials{}, errors.New("server timeout")
+		}
+	}
+}
+
+func restoreTerminal(oldState *term.State) {
+	term.Restore(int(os.Stdin.Fd()), oldState)
+}
+
+// // listens to 'q' input on terminal and
+// // sends 'true' to 'quit' channel
+// func quitBrowserLogin(quit chan bool, oState *term.State) {
+// 	oldState, err := term.MakeRaw(int(os.Stdin.Fd()))
+// 	if err != nil {
+// 		return
+// 	}
+// 	*oState = *oldState
+// 	defer restoreTerminal(oldState)
+// 	b := make([]byte, 1)
+// 	for {
+// 		_, _ = os.Stdin.Read(b)
+// 		if string(b) == QUIT_BROWSER_LOGIN {
+// 			quit <- true
+// 			break
+// 		}
+// 	}
+// }
+
+func closeListener(listener *net.Listener) error {
+	err := (*listener).Close()
+	if err != nil {
+		return err
+	}
+	log.Debug().Msg("Callback server shutdown successfully")
+	return nil
+}
+
+func browserLoginHandler(success chan models.UserCredentials, failure chan error) http.HandlerFunc {
+
+	return func(w http.ResponseWriter, r *http.Request) {
+		var loginResponse models.UserCredentials
+
+		decoder := json.NewDecoder(r.Body)
+		err := decoder.Decode(&loginResponse)
+		if err != nil {
+			failure <- err
+		}
+
+		w.WriteHeader(http.StatusOK)
+		success <- loginResponse
+
+	}
+}
+
+// check if one of the flag or all the envs are set
+// orgIDOptional is set when the login already knows which organization to use,
+// which is the case when signing back in to an existing profile.
+func validateDirectUserLoginFlagsAndEnvsSet(cmd *cobra.Command, domain string, orgIDOptional bool) (isDirectUserLogin bool, err error) {
+	requiredFlagsEnvs := map[string]string{
+		"email":    "INFISICAL_EMAIL",
+		"password": "INFISICAL_PASSWORD",
+	}
+	if !orgIDOptional {
+		requiredFlagsEnvs["organization-id"] = "INFISICAL_ORGANIZATION_ID"
+	}
+
+	var missingFlagsEnvs []string
+
+	for flag, env := range requiredFlagsEnvs {
+		if !cmd.Flags().Changed(flag) && os.Getenv(env) == "" {
+			missingFlagsEnvs = append(missingFlagsEnvs, fmt.Sprintf("--%s", flag))
+		}
+	}
+
+	if len(missingFlagsEnvs) == 0 {
+		if domain != "" {
+			return true, nil
+		}
+
+		missingFlagsEnvs = append(missingFlagsEnvs, "--domain")
+		requiredFlagsEnvs["domain"] = "INFISICAL_DOMAIN"
+	}
+
+	if len(missingFlagsEnvs) == len(requiredFlagsEnvs) {
+		return false, nil
+	}
+
+	return true, fmt.Errorf("missing flags for the user login method: %v.\nPlease set the required flags or environment variables and try again", missingFlagsEnvs)
+}
+
+func trimAndWriteCustomDomainToConfig(domain string, infisicalConfig *models.ConfigFile) error {
+	// Trimmed the '/' from the end of the self-hosting url, and set the api & login url
+	domain = strings.TrimRight(domain, "/")
+	setDomainConfig(domain)
+
+	// Write the new domain to the config file, to allow the user to select it in the future if needed
+	// First check if infiscialConfig.Domains already includes the domain, if it does, do not add it again
+	if !slices.Contains(infisicalConfig.Domains, domain) {
+		infisicalConfig.Domains = append(infisicalConfig.Domains, domain)
+		err := util.WriteConfigFile(infisicalConfig)
+
+		if err != nil {
+			return fmt.Errorf("askForDomain: unable to write domains to config file because [err=%s]", err)
+		}
+	}
+
+	return nil
+}
+
+func validateURLInput(input string) error {
+	_, err := url.ParseRequestURI(input)
+	if err != nil {
+		return errors.New("please provide a valid domain url (e.g., https://your-instance.com)")
+	}
+	return nil
+}
+
+func validateEmailInput(input string) error {
+	matched, err := regexp.MatchString("^[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\\.[a-zA-Z0-9-.]+$", input)
+	if err != nil || !matched {
+		return errors.New("please provide a valid email address")
+	}
+	return nil
+}
+
+func validatePasswordInput(input string) error {
+	if len(input) < 1 {
+		return errors.New("please provide a valid password")
+	}
+	return nil
+}

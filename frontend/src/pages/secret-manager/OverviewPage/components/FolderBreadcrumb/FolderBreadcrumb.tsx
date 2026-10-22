@@ -17,6 +17,7 @@ import {
   DropdownMenuTrigger,
   IconButton
 } from "@app/components/v3";
+import type { SecretOverviewPageSearch } from "@app/pages/secret-manager/OverviewPage/overviewSearch";
 
 import { useOverviewTelemetry } from "../../OverviewTelemetry";
 
@@ -307,7 +308,10 @@ export function FolderBreadcrumb({ secretPath = "" }: Props) {
                 }
                 from="/organizations/$orgId/projects/secret-management/$projectId/overview"
                 to="."
-                search={(prev) => ({ ...prev, secretPath: getCrumbPath(0) })}
+                search={(prev: SecretOverviewPageSearch) => ({
+                  ...prev,
+                  secretPath: getCrumbPath(0)
+                })}
                 aria-label="Root folder"
                 title="/"
               >
@@ -346,7 +350,10 @@ export function FolderBreadcrumb({ secretPath = "" }: Props) {
                       }
                       from="/organizations/$orgId/projects/secret-management/$projectId/overview"
                       to="."
-                      search={(prev) => ({ ...prev, secretPath: getCrumbPath(index + 1) })}
+                      search={(prev: SecretOverviewPageSearch) => ({
+                        ...prev,
+                        secretPath: getCrumbPath(index + 1)
+                      })}
                     >
                       {path}
                     </Link>
@@ -392,7 +399,7 @@ export function FolderBreadcrumb({ secretPath = "" }: Props) {
                             }
                             from="/organizations/$orgId/projects/secret-management/$projectId/overview"
                             to="."
-                            search={(prev) => ({
+                            search={(prev: SecretOverviewPageSearch) => ({
                               ...prev,
                               secretPath: getCrumbPath(originalIndex + 1)
                             })}
@@ -441,7 +448,7 @@ export function FolderBreadcrumb({ secretPath = "" }: Props) {
                         }
                         from="/organizations/$orgId/projects/secret-management/$projectId/overview"
                         to="."
-                        search={(prev) => ({
+                        search={(prev: SecretOverviewPageSearch) => ({
                           ...prev,
                           secretPath: getCrumbPath(originalIndex + 1)
                         })}

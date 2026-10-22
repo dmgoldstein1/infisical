@@ -13,7 +13,9 @@ export const Route = createFileRoute(
 )({
   component: ResourceOverviewPage,
   validateSearch: zodValidator(resourceOverviewSearchSchema),
-  beforeLoad: async () => {
+  beforeLoad: async (): Promise<{
+    breadcrumbs: { label: string; link: ReturnType<typeof linkOptions> }[];
+  }> => {
     return {
       breadcrumbs: [
         {

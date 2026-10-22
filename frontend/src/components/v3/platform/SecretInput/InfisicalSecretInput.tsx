@@ -7,6 +7,7 @@ import { ROUTE_PATHS } from "@app/const/routes";
 import { useOrganization, useProject, useProjectPermission, useSubscription } from "@app/context";
 import { ProjectPermissionSecretActions } from "@app/context/ProjectPermissionContext/types";
 import { hasSecretReadValueOrDescribePermission } from "@app/lib/fn/permission";
+import type { SecretOverviewPageSearch } from "@app/pages/secret-manager/OverviewPage/overviewSearch";
 
 import { SecretInput, SecretInputVariant } from "./SecretInput";
 import { SecretReferenceWizard } from "./SecretReferenceWizard";
@@ -161,7 +162,7 @@ export const InfisicalSecretInput = forwardRef<HTMLTextAreaElement, Props>(
           }
 
           navigate({
-            search: (prev) => ({
+            search: (prev: SecretOverviewPageSearch) => ({
               ...prev,
               search: segment,
               filterBy: "secret",
@@ -216,7 +217,7 @@ export const InfisicalSecretInput = forwardRef<HTMLTextAreaElement, Props>(
         navigate({
           to: ROUTE_PATHS.SecretManager.OverviewPage.path,
           params: { projectId },
-          search: (prev) => ({
+          search: (prev: SecretOverviewPageSearch) => ({
             ...prev,
             secretPath: segment === environmentSlug ? "/" : folderPath,
             search: segment === secretName ? secretName : prev.search,

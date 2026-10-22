@@ -1,0 +1,687 @@
+package mssql
+
+import (
+	"context"
+	"crypto/tls"
+	"fmt"
+	"io"
+	"net"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/Azure/go-ntlmssp"
+	"github.com/Infisical/infisical-merge/packages/pam/session"
+	"github.com/jcmturner/gokrb5/v8/client"
+	"github.com/jcmturner/gokrb5/v8/config"
+	"github.com/jcmturner/gokrb5/v8/spnego"
+	"github.com/rs/zerolog/log"
+)
+
+type MssqlProxyConfig struct {
+	TargetAddr     string
+	InjectUsername string
+	InjectPassword string
+	InjectDatabase string
+	InjectDomain   string
+	InjectRealm    string
+	InjectKDCAddr  string
+	InjectSPN      string
+	AuthMethod     string // "sql-login", "ntlm", or "kerberos"
+	EnableTLS      bool
+	TLSConfig      *tls.Config
+	SessionID      string
+	SessionLogger  session.SessionLogger
+}
+
+type pendingQuery struct {
+	sql       string
+	timestamp time.Time
+}
+
+type MssqlProxy struct {
+	config       MssqlProxyConfig
+	mu           sync.Mutex
+	pendingQuery *pendingQuery
+}
+
+func NewMssqlProxy(config MssqlProxyConfig) *MssqlProxy {
+	return &MssqlProxy{config: config}
+}
+
+func (p *MssqlProxy) HandleConnection(ctx context.Context, clientConn net.Conn) error {
+	defer clientConn.Close()
+	defer p.config.SessionLogger.Close()
+
+	log.Info().Str("sessionID", p.config.SessionID).Msg("MSSQL PAM session started")
+
+	// === PHASE 1: Handle client handshake (proxy acts as MSSQL server) ===
+	log.Info().Str("sessionID", p.config.SessionID).Msg("Starting client handshake...")
+	if err := p.handleClientHandshake(clientConn); err != nil {
+		return fmt.Errorf("client handshake failed: %w", err)
+	}
+	log.Info().Str("sessionID", p.config.SessionID).Msg("Client handshake completed")
+
+	// === PHASE 2: Connect to server and authenticate (proxy acts as MSSQL client) ===
+	serverConn, loginResponse, err := p.connectAndAuthenticateToServer()
+	if err != nil {
+		return fmt.Errorf("server connection failed: %w", err)
+	}
+	defer serverConn.Close()
+
+	// === PHASE 3: Forward server's login response to client ===
+	for _, pkt := range loginResponse {
+		if err := pkt.Write(clientConn); err != nil {
+			return fmt.Errorf("forward login response to client: %w", err)
+		}
+	}
+	log.Info().Str("sessionID", p.config.SessionID).Msg("Forwarded login response to client")
+
+	// === PHASE 4: Proxy traffic - just pipe bytes ===
+	errCh := make(chan error, 2)
+	go p.proxyToServer(clientConn, serverConn, errCh)
+	go p.proxyToClient(serverConn, clientConn, errCh)
+
+	select {
+	case err := <-errCh:
+		if err != nil && err != io.EOF {
+			log.Debug().Err(err).Str("sessionID", p.config.SessionID).Msg("Connection ended")
+		}
+	case <-ctx.Done():
+	}
+
+	log.Info().Str("sessionID", p.config.SessionID).Msg("MSSQL PAM session ended")
+	return nil
+}
+
+// handleClientHandshake handles the client's PRELOGIN and LOGIN7, responding as a server
+func (p *MssqlProxy) handleClientHandshake(clientConn net.Conn) error {
+	// 1. Read client PRELOGIN
+	log.Info().Str("sessionID", p.config.SessionID).Msg("Waiting for client PRELOGIN...")
+	clientPrelogin, err := ReadAllPackets(clientConn)
+	if err != nil {
+		return fmt.Errorf("read client prelogin: %w", err)
+	}
+	if len(clientPrelogin) == 0 || clientPrelogin[0].Type != PacketTypePrelogin {
+		return fmt.Errorf("expected PRELOGIN from client, got 0x%02X", clientPrelogin[0].Type)
+	}
+
+	log.Info().Str("sessionID", p.config.SessionID).Msg("Received client PRELOGIN")
+
+	// 2. Send our own PRELOGIN response (no encryption)
+	preloginResp := BuildPreloginResponse(EncryptNotSup)
+	respPkt := &TDSPacket{
+		Type:     PacketTypeTabularResult,
+		Status:   StatusEOM,
+		PacketID: 1,
+		Payload:  preloginResp,
+	}
+	if err := respPkt.Write(clientConn); err != nil {
+		return fmt.Errorf("send prelogin response: %w", err)
+	}
+
+	log.Info().Str("sessionID", p.config.SessionID).Msg("Sent PRELOGIN response (no encryption)")
+
+	// 3. Read client LOGIN7
+	log.Info().Str("sessionID", p.config.SessionID).Msg("Waiting for client LOGIN7...")
+	loginPackets, err := ReadAllPackets(clientConn)
+	if err != nil {
+		return fmt.Errorf("read login: %w", err)
+	}
+	if len(loginPackets) == 0 {
+		return fmt.Errorf("no login packet received")
+	}
+
+	if loginPackets[0].Type == PacketTypeSSPI {
+		return fmt.Errorf("Windows/SSPI authentication is not supported; use SQL authentication")
+	}
+	if loginPackets[0].Type != PacketTypeLogin7 {
+		return fmt.Errorf("expected LOGIN7 from client, got packet type 0x%02X", loginPackets[0].Type)
+	}
+
+	// Parse LOGIN7 to validate (we don't use client's credentials)
+	loginPayload := CombinePayloads(loginPackets)
+	loginMsg, err := ParseLogin7(loginPayload)
+	if err != nil {
+		return fmt.Errorf("parse login: %w", err)
+	}
+
+	if err := CheckLogin7Supported(loginMsg); err != nil {
+		return err
+	}
+
+	log.Info().
+		Str("sessionID", p.config.SessionID).
+		Str("clientUser", loginMsg.Username).
+		Msg("Received client LOGIN7")
+
+	return nil
+}
+
+// connectAndAuthenticateToServer connects to the real server and authenticates with injected credentials
+// Returns the server connection and the login response to forward to client
+func (p *MssqlProxy) connectAndAuthenticateToServer() (net.Conn, []*TDSPacket, error) {
+	// Connect to backend
+	serverConn, err := net.Dial("tcp", p.config.TargetAddr)
+	if err != nil {
+		return nil, nil, fmt.Errorf("dial server: %w", err)
+	}
+
+	return p.authenticateOverConn(serverConn)
+}
+
+// authenticateOverConn lets a caller own the dial (to bound it with a context) and still reuse these auth paths.
+func (p *MssqlProxy) authenticateOverConn(serverConn net.Conn) (net.Conn, []*TDSPacket, error) {
+	// 1. Send our PRELOGIN to server
+	encOption := uint8(EncryptNotSup)
+	if p.config.EnableTLS {
+		encOption = EncryptOn
+	}
+	preloginReq := BuildPreloginRequest(encOption)
+	preloginPkt := &TDSPacket{
+		Type:     PacketTypePrelogin,
+		Status:   StatusEOM,
+		PacketID: 1,
+		Payload:  preloginReq,
+	}
+	if err := preloginPkt.Write(serverConn); err != nil {
+		serverConn.Close()
+		return nil, nil, fmt.Errorf("send prelogin to server: %w", err)
+	}
+	log.Info().
+		Str("sessionID", p.config.SessionID).
+		Uint8("encOption", encOption).
+		Msg("Sent PRELOGIN to server")
+
+	// 2. Read server's PRELOGIN response
+	serverPreloginPkts, err := ReadAllPackets(serverConn)
+	if err != nil {
+		serverConn.Close()
+		return nil, nil, fmt.Errorf("read server prelogin: %w", err)
+	}
+
+	// 3. Handle TLS based on EnableTLS config
+	if p.config.EnableTLS {
+		if p.config.TLSConfig == nil {
+			serverConn.Close()
+			return nil, nil, fmt.Errorf("TLS requested but no TLS configuration provided")
+		}
+
+		// Check server's encryption response
+		serverPayload := CombinePayloads(serverPreloginPkts)
+		serverEnc := GetPreloginEncryption(serverPayload)
+
+		log.Info().
+			Str("sessionID", p.config.SessionID).
+			Uint8("serverEnc", serverEnc).
+			Msg("Server PRELOGIN encryption response")
+
+		if serverEnc == EncryptNotSup {
+			serverConn.Close()
+			return nil, nil, fmt.Errorf("server does not support TLS encryption")
+		}
+
+		// MSSQL performs TLS handshake wrapped inside TDS PRELOGIN packets.
+		// We use a passthrough conn that initially points to TLSHandshakeConn,
+		// then switches to the raw connection after handshake completes.
+		handshakeConn := NewTLSHandshakeConn(serverConn)
+		passthrough := &PassthroughConn{Conn: handshakeConn}
+		tlsConn := tls.Client(passthrough, p.config.TLSConfig)
+
+		if err := tlsConn.Handshake(); err != nil {
+			serverConn.Close()
+			return nil, nil, fmt.Errorf("TLS handshake with server failed: %w", err)
+		}
+
+		log.Info().
+			Str("sessionID", p.config.SessionID).
+			Uint16("tlsVersion", tlsConn.ConnectionState().Version).
+			Str("cipherSuite", tls.CipherSuiteName(tlsConn.ConnectionState().CipherSuite)).
+			Msg("TLS handshake completed")
+
+		// After TLS handshake, switch the passthrough to point directly to the
+		// raw TCP connection. TLS records will now go directly to TCP.
+		passthrough.Conn = serverConn
+		serverConn = tlsConn
+		log.Info().Str("sessionID", p.config.SessionID).Msg("TLS established with server")
+	}
+
+	if p.config.AuthMethod == "ntlm" {
+		return p.authenticateNTLM(serverConn)
+	}
+	if p.config.AuthMethod == "kerberos" {
+		return p.authenticateKerberos(serverConn)
+	}
+	return p.authenticateSQL(serverConn)
+}
+
+func (p *MssqlProxy) authenticateSQL(serverConn net.Conn) (_ net.Conn, _ []*TDSPacket, retErr error) {
+	defer func() {
+		if retErr != nil {
+			serverConn.Close()
+		}
+	}()
+
+	loginMsg := &Login7Message{
+		Username: p.config.InjectUsername,
+		Password: p.config.InjectPassword,
+		Database: p.config.InjectDatabase,
+		AppName:  "Infisical PAM Proxy",
+		Hostname: "infisical-proxy",
+	}
+
+	loginPkt := &TDSPacket{
+		Type:     PacketTypeLogin7,
+		Status:   StatusEOM,
+		PacketID: 1,
+		Payload:  loginMsg.Encode(),
+	}
+	if err := loginPkt.Write(serverConn); err != nil {
+		return nil, nil, fmt.Errorf("send login to server: %w", err)
+	}
+
+	log.Info().
+		Str("sessionID", p.config.SessionID).
+		Str("user", p.config.InjectUsername).
+		Int("loginPktLen", len(loginPkt.Payload)+TDSHeaderSize).
+		Msg("Sent LOGIN7 to server")
+
+	response, err := ReadAllPackets(serverConn)
+	if err != nil {
+		return nil, nil, fmt.Errorf("read login response: %w", err)
+	}
+	log.Info().
+		Str("sessionID", p.config.SessionID).
+		Int("responsePackets", len(response)).
+		Msg("Received login response")
+
+	respPayload := CombinePayloads(response)
+	if ContainsToken(respPayload, TokenError) {
+		return nil, nil, fmt.Errorf("server authentication failed")
+	}
+	if !ContainsToken(respPayload, TokenLoginAck) {
+		return nil, nil, fmt.Errorf("no login ack from server")
+	}
+
+	log.Info().Str("sessionID", p.config.SessionID).Msg("MSSQL server authentication successful")
+	return serverConn, response, nil
+}
+
+func (p *MssqlProxy) authenticateNTLM(serverConn net.Conn) (_ net.Conn, _ []*TDSPacket, retErr error) {
+	defer func() {
+		if retErr != nil {
+			serverConn.Close()
+		}
+	}()
+
+	negotiate, err := ntlmssp.NewNegotiateMessage(p.config.InjectDomain, "infisical-proxy")
+	if err != nil {
+		return nil, nil, fmt.Errorf("create NTLM negotiate message: %w", err)
+	}
+
+	loginMsg := &Login7Message{
+		Database: p.config.InjectDatabase,
+		AppName:  "Infisical PAM Proxy",
+		Hostname: "infisical-proxy",
+		SSPIData: negotiate,
+	}
+
+	loginPkt := &TDSPacket{
+		Type:     PacketTypeLogin7,
+		Status:   StatusEOM,
+		PacketID: 1,
+		Payload:  loginMsg.Encode(),
+	}
+	if err := loginPkt.Write(serverConn); err != nil {
+		return nil, nil, fmt.Errorf("send NTLM login to server: %w", err)
+	}
+
+	log.Info().
+		Str("sessionID", p.config.SessionID).
+		Str("domain", p.config.InjectDomain).
+		Str("user", p.config.InjectUsername).
+		Msg("Sent LOGIN7 with NTLM negotiate to server")
+
+	challengeResponse, err := ReadAllPackets(serverConn)
+	if err != nil {
+		return nil, nil, fmt.Errorf("read NTLM challenge: %w", err)
+	}
+
+	challengePayload := CombinePayloads(challengeResponse)
+
+	challengeToken, err := ExtractSSPIToken(challengePayload)
+	if err != nil {
+		if ContainsToken(challengePayload, TokenError) {
+			return nil, nil, fmt.Errorf("server rejected NTLM negotiate")
+		}
+		return nil, nil, fmt.Errorf("extract NTLM challenge: %w", err)
+	}
+
+	log.Info().
+		Str("sessionID", p.config.SessionID).
+		Int("challengeLen", len(challengeToken)).
+		Msg("Received NTLM challenge from server")
+
+	ntlmUsername := p.config.InjectDomain + "\\" + p.config.InjectUsername
+	authenticate, err := ntlmssp.ProcessChallenge(challengeToken, ntlmUsername, p.config.InjectPassword, true)
+	if err != nil {
+		return nil, nil, fmt.Errorf("process NTLM challenge: %w", err)
+	}
+
+	sspiPkt := &TDSPacket{
+		Type:     PacketTypeSSPI,
+		Status:   StatusEOM,
+		PacketID: 1,
+		Payload:  authenticate,
+	}
+	if err := sspiPkt.Write(serverConn); err != nil {
+		return nil, nil, fmt.Errorf("send NTLM authenticate: %w", err)
+	}
+
+	log.Info().
+		Str("sessionID", p.config.SessionID).
+		Msg("Sent NTLM authenticate to server")
+
+	response, err := ReadAllPackets(serverConn)
+	if err != nil {
+		return nil, nil, fmt.Errorf("read NTLM login response: %w", err)
+	}
+
+	respPayload := CombinePayloads(response)
+	if ContainsToken(respPayload, TokenError) {
+		return nil, nil, fmt.Errorf("NTLM authentication failed")
+	}
+	if !ContainsToken(respPayload, TokenLoginAck) {
+		return nil, nil, fmt.Errorf("no login ack after NTLM authentication")
+	}
+
+	log.Info().Str("sessionID", p.config.SessionID).Msg("MSSQL NTLM authentication successful")
+	return serverConn, response, nil
+}
+
+func (p *MssqlProxy) authenticateKerberos(serverConn net.Conn) (_ net.Conn, _ []*TDSPacket, retErr error) {
+	defer func() {
+		if retErr != nil {
+			serverConn.Close()
+		}
+	}()
+
+	cfg := buildKrb5Config(p.config.InjectRealm, p.config.InjectKDCAddr)
+
+	krbClient := client.NewWithPassword(
+		p.config.InjectUsername, p.config.InjectRealm, p.config.InjectPassword,
+		cfg, client.DisablePAFXFAST(true),
+	)
+	defer krbClient.Destroy()
+
+	if err := krbClient.Login(); err != nil {
+		return nil, nil, wrapKerberosError(err, p.config.InjectKDCAddr)
+	}
+
+	ticket, encryptionKey, err := krbClient.GetServiceTicket(p.config.InjectSPN)
+	if err != nil {
+		return nil, nil, wrapKerberosError(err, p.config.InjectKDCAddr)
+	}
+
+	initToken, err := spnego.NewNegTokenInitKRB5(krbClient, ticket, encryptionKey)
+	if err != nil {
+		return nil, nil, fmt.Errorf("create SPNEGO token: %w", err)
+	}
+
+	tokenBytes, err := initToken.Marshal()
+	if err != nil {
+		return nil, nil, fmt.Errorf("marshal SPNEGO token: %w", err)
+	}
+
+	loginMsg := &Login7Message{
+		Database: p.config.InjectDatabase,
+		AppName:  "Infisical PAM Proxy",
+		Hostname: "infisical-proxy",
+		SSPIData: tokenBytes,
+	}
+
+	loginPkt := &TDSPacket{
+		Type:     PacketTypeLogin7,
+		Status:   StatusEOM,
+		PacketID: 1,
+		Payload:  loginMsg.Encode(),
+	}
+	if err := loginPkt.Write(serverConn); err != nil {
+		return nil, nil, fmt.Errorf("send Kerberos login to server: %w", err)
+	}
+
+	log.Info().
+		Str("sessionID", p.config.SessionID).
+		Str("realm", p.config.InjectRealm).
+		Str("spn", p.config.InjectSPN).
+		Str("user", p.config.InjectUsername).
+		Msg("Sent LOGIN7 with Kerberos SPNEGO to server")
+
+	response, err := ReadAllPackets(serverConn)
+	if err != nil {
+		return nil, nil, fmt.Errorf("read Kerberos login response: %w", err)
+	}
+
+	respPayload := CombinePayloads(response)
+
+	// Kerberos mutual auth: server may send SSPI accept before LoginAck.
+	// Read the next batch which should contain LoginAck.
+	if !ContainsToken(respPayload, TokenLoginAck) && !ContainsToken(respPayload, TokenError) {
+		response, err = ReadAllPackets(serverConn)
+		if err != nil {
+			return nil, nil, fmt.Errorf("read Kerberos final response: %w", err)
+		}
+		respPayload = CombinePayloads(response)
+	}
+
+	if ContainsToken(respPayload, TokenError) {
+		return nil, nil, fmt.Errorf("Kerberos authentication failed")
+	}
+	if !ContainsToken(respPayload, TokenLoginAck) {
+		return nil, nil, fmt.Errorf("no login ack after Kerberos authentication")
+	}
+
+	log.Info().Str("sessionID", p.config.SessionID).Msg("MSSQL Kerberos authentication successful")
+	return serverConn, response, nil
+}
+
+func buildKrb5Config(realm, kdcAddress string) *config.Config {
+	cfg := config.New()
+	cfg.LibDefaults.DefaultRealm = realm
+	cfg.LibDefaults.DNSLookupKDC = kdcAddress == ""
+	cfg.LibDefaults.DNSLookupRealm = false
+	cfg.LibDefaults.UDPPreferenceLimit = 1
+
+	if kdcAddress != "" {
+		if !strings.Contains(kdcAddress, ":") {
+			kdcAddress = kdcAddress + ":88"
+		}
+		cfg.Realms = append(cfg.Realms, config.Realm{
+			Realm: realm,
+			KDC:   []string{kdcAddress},
+		})
+	}
+
+	return cfg
+}
+
+func wrapKerberosError(err error, kdcAddress string) error {
+	msg := err.Error()
+	switch {
+	case strings.Contains(msg, "sending to KDC") || strings.Contains(msg, "connection refused") || strings.Contains(msg, "dial timeout") || strings.Contains(msg, "i/o timeout"):
+		return fmt.Errorf("Kerberos: cannot reach KDC at %s (verify address and ensure port 88 is open): %w", kdcAddress, err)
+	case strings.Contains(msg, "Clock skew") || strings.Contains(msg, "KRB_AP_ERR_SKEW"):
+		return fmt.Errorf("Kerberos: clock skew too large (gateway and KDC must be within 5 minutes): %w", err)
+	case strings.Contains(msg, "Preauthentication") || strings.Contains(msg, "KDC_ERR_PREAUTH_FAILED"):
+		return fmt.Errorf("Kerberos: invalid credentials (check username, password, and realm): %w", err)
+	case strings.Contains(msg, "not found in Kerberos database") || strings.Contains(msg, "PRINCIPAL_UNKNOWN"):
+		return fmt.Errorf("Kerberos: principal not found (check realm and SPN): %w", err)
+	default:
+		return fmt.Errorf("Kerberos authentication failed: %w", err)
+	}
+}
+
+func (p *MssqlProxy) proxyToServer(client, server net.Conn, errCh chan error) {
+	defer func() {
+		if r := recover(); r != nil {
+			errCh <- fmt.Errorf("panic in proxyToServer: %v", r)
+		}
+	}()
+
+	var payloadBuf []byte
+	var currentPktType uint8
+
+	for {
+		pkt, err := ReadPacket(client)
+		if err != nil {
+			errCh <- err
+			return
+		}
+
+		switch pkt.Type {
+		case PacketTypeSQLBatch:
+			currentPktType = pkt.Type
+			payloadBuf = append(payloadBuf, pkt.Payload...)
+			if pkt.IsEOM() {
+				sql := ExtractSQL(payloadBuf)
+				if sql != "" {
+					p.mu.Lock()
+					p.pendingQuery = &pendingQuery{
+						sql:       sql,
+						timestamp: time.Now(),
+					}
+					p.mu.Unlock()
+				}
+				payloadBuf = nil
+			}
+
+		case PacketTypeRPCRequest:
+			currentPktType = pkt.Type
+			payloadBuf = append(payloadBuf, pkt.Payload...)
+			if pkt.IsEOM() {
+				rpcName := ExtractRPCText(payloadBuf)
+				p.mu.Lock()
+				p.pendingQuery = &pendingQuery{
+					sql:       rpcName,
+					timestamp: time.Now(),
+				}
+				p.mu.Unlock()
+				payloadBuf = nil
+			}
+
+		case PacketTypeBulkLoad:
+			if currentPktType != PacketTypeBulkLoad {
+				currentPktType = PacketTypeBulkLoad
+				p.mu.Lock()
+				p.pendingQuery = &pendingQuery{
+					sql:       "BULK INSERT",
+					timestamp: time.Now(),
+				}
+				p.mu.Unlock()
+			}
+
+		case PacketTypeAttention:
+			// Attention/cancel signal - let it through
+
+		case PacketTypeTransMgrReq:
+			// Transaction management (BEGIN/COMMIT/ROLLBACK) - let it through
+
+		default:
+			log.Warn().
+				Str("sessionID", p.config.SessionID).
+				Uint8("packetType", pkt.Type).
+				Msg("Blocked unrecognized packet type (cannot be session recorded)")
+			continue
+		}
+
+		if err := pkt.Write(server); err != nil {
+			errCh <- err
+			return
+		}
+	}
+}
+
+func (p *MssqlProxy) proxyToClient(server, client net.Conn, errCh chan error) {
+	defer func() {
+		if r := recover(); r != nil {
+			errCh <- fmt.Errorf("panic in proxyToClient: %v", r)
+		}
+	}()
+
+	var responseBuf []byte
+
+	for {
+		pkt, err := ReadPacket(server)
+		if err != nil {
+			errCh <- err
+			return
+		}
+
+		// Accumulate response packets for TabularResult responses
+		if pkt.Type == PacketTypeTabularResult {
+			responseBuf = append(responseBuf, pkt.Payload...)
+
+			if pkt.IsEOM() {
+				p.mu.Lock()
+				pending := p.pendingQuery
+				p.pendingQuery = nil
+				p.mu.Unlock()
+
+				if pending != nil {
+					hasError, errorMsg, rowsAffected := ParseResponseOutcome(responseBuf)
+
+					var output string
+					if hasError {
+						if errorMsg != "" {
+							output = fmt.Sprintf("ERROR: %s", errorMsg)
+						} else {
+							output = "ERROR"
+						}
+					} else if rowsAffected > 0 {
+						output = fmt.Sprintf("OK (%d rows affected)", rowsAffected)
+					} else {
+						output = "OK"
+					}
+
+					p.config.SessionLogger.LogEntry(session.SessionLogEntry{
+						Timestamp: pending.timestamp,
+						Input:     pending.sql,
+						Output:    output,
+					})
+				}
+				responseBuf = nil
+			}
+		}
+
+		if err := pkt.Write(client); err != nil {
+			errCh <- err
+			return
+		}
+	}
+}
+
+// The context bounds the whole handshake, not just the dial: a target that stalls after accepting the
+// connection would otherwise leak a goroutine and socket per probe.
+func VerifyCredential(ctx context.Context, config MssqlProxyConfig) error {
+	dialer := &net.Dialer{}
+	serverConn, err := dialer.DialContext(ctx, "tcp", config.TargetAddr)
+	if err != nil {
+		return fmt.Errorf("dial server: %w", err)
+	}
+
+	if deadline, ok := ctx.Deadline(); ok {
+		if err := serverConn.SetDeadline(deadline); err != nil {
+			serverConn.Close()
+			return fmt.Errorf("set handshake deadline: %w", err)
+		}
+	}
+
+	proxy := NewMssqlProxy(config)
+	authedConn, _, err := proxy.authenticateOverConn(serverConn)
+	if err != nil {
+		return err
+	}
+	// The credential is already proven at this point, so a failure tearing the socket down is not the probe's verdict.
+	_ = authedConn.Close()
+	return nil
+}

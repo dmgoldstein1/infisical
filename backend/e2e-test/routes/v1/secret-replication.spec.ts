@@ -210,7 +210,7 @@ describe.each([{ secretPath: "/" }, { secretPath: "/deep" }])(
       );
     });
   },
-  { timeout: 60_000 }
+  60_000
 );
 
 // dev <- stage, dev <- prod
@@ -384,5 +384,5 @@ describe.each([{ path: "/" }, { path: "/deep" }])(
       );
     });
   },
-  { timeout: 60_000 }
+  60_000
 );

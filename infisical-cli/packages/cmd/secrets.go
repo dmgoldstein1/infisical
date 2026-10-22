@@ -1,0 +1,842 @@
+/*
+Copyright (c) 2023 Infisical Inc.
+*/
+package cmd
+
+import (
+	"fmt"
+	"os"
+	"regexp"
+	"sort"
+	"strings"
+
+	"github.com/Infisical/infisical-merge/packages/api"
+	"github.com/Infisical/infisical-merge/packages/models"
+	"github.com/Infisical/infisical-merge/packages/util"
+	"github.com/Infisical/infisical-merge/packages/visualize"
+	"github.com/posthog/posthog-go"
+	"github.com/spf13/cobra"
+)
+
+// maskSecretValue redacts a secret value so it is not echoed to stdout.
+// The value has just been provided by the caller, so there is no need to
+// print it back; doing so risks leaking it into logs, terminals, or agents.
+func maskSecretValue(value string) string {
+	if value == "" {
+		return ""
+	}
+	return "******"
+}
+
+func runSecrets(cmd *cobra.Command, args []string) {
+	environmentName := util.ResolveEnvironmentName(cmd)
+
+	token, err := util.GetInfisicalToken(cmd)
+	if err != nil {
+		util.HandleError(err, "Unable to parse flag")
+	}
+
+	projectId, err := util.GetCmdFlagOrEnvWithDefaultValue(cmd, "projectId", []string{util.INFISICAL_PROJECT_ID_NAME}, "")
+	if err != nil {
+		util.HandleError(err, "Unable to parse flag")
+	}
+
+	secretsPath := util.ResolveSecretPath(cmd)
+
+	shouldExpandSecrets, err := cmd.Flags().GetBool("expand")
+	if err != nil {
+		util.HandleError(err)
+	}
+
+	includeImports, err := cmd.Flags().GetBool("include-imports")
+	if err != nil {
+		util.HandleError(err)
+	}
+
+	recursive, err := cmd.Flags().GetBool("recursive")
+	if err != nil {
+		util.HandleError(err)
+	}
+
+	tagSlugs, err := cmd.Flags().GetString("tags")
+	if err != nil {
+		util.HandleError(err, "Unable to parse flag")
+	}
+
+	secretOverriding, err := cmd.Flags().GetBool("secret-overriding")
+	if err != nil {
+		util.HandleError(err, "Unable to parse flag")
+	}
+
+	plainOutput, err := cmd.Flags().GetBool("plain")
+	if err != nil {
+		util.HandleError(err, "Unable to parse flag")
+	}
+
+	outputFormat, err := cmd.Flags().GetString("output")
+	if err != nil {
+		util.HandleError(err, "Unable to parse flag")
+	}
+
+	request := models.GetAllSecretsParameters{
+		Environment:              environmentName,
+		WorkspaceId:              projectId,
+		TagSlugs:                 tagSlugs,
+		SecretsPath:              secretsPath,
+		IncludeImport:            includeImports,
+		Recursive:                recursive,
+		ExpandSecretReferences:   shouldExpandSecrets,
+		IncludePersonalOverrides: secretOverriding,
+	}
+
+	if token != nil && token.Type == util.SERVICE_TOKEN_IDENTIFIER {
+		request.InfisicalToken = token.Token
+	} else if token != nil && token.Type == util.UNIVERSAL_AUTH_TOKEN_IDENTIFIER {
+		request.UniversalAuthAccessToken = token.Token
+	}
+
+	secrets, err := util.GetAllEnvironmentVariables(request, "")
+	if err != nil {
+		util.HandleError(err)
+	}
+
+	// Sort the secrets by key so we can create a consistent output
+	secrets = util.SortSecretsByKeys(secrets)
+
+	if outputFormat != "" {
+
+		var outputStructure []map[string]any
+		for _, secret := range secrets {
+			outputStructure = append(outputStructure, map[string]any{
+				"secretKey":   secret.Key,
+				"secretValue": secret.Value,
+			})
+		}
+
+		output, err := util.FormatOutput(outputFormat, outputStructure, &util.FormatOutputOptions{
+			DotEnvArrayKeyAttribute:   "secretKey",
+			DotEnvArrayValueAttribute: "secretValue",
+		})
+		if err != nil {
+			util.HandleError(err, "Unable to format output")
+		}
+		util.PrintStdout(output)
+	} else {
+		if plainOutput {
+			for _, secret := range secrets {
+				util.PrintfStdout("%s=%s\n", secret.Key, secret.Value)
+			}
+		} else {
+			visualize.PrintAllSecretDetails(secrets)
+		}
+	}
+
+	Telemetry.CaptureEvent("cli-command:secrets", posthog.NewProperties().Set("secretCount", len(secrets)).Set("version", util.CLI_VERSION))
+}
+
+func validateSecretsSetArgs(cmd *cobra.Command, args []string) error {
+	if cmd.Flags().Changed("file") {
+		if len(args) > 0 {
+			return fmt.Errorf("secrets cannot be provided as command-line arguments when the --file option is used. Please choose either file-based or argument-based secret input")
+		}
+		return nil
+	}
+	return cobra.MinimumNArgs(1)(cmd, args)
+}
+
+func runSecretsSet(cmd *cobra.Command, args []string) {
+	token, err := util.GetInfisicalToken(cmd)
+	if err != nil {
+		util.HandleError(err, "Unable to parse flag")
+	}
+
+	environmentName := util.ResolveEnvironmentName(cmd)
+
+	projectId, err := util.GetCmdFlagOrEnvWithDefaultValue(cmd, "projectId", []string{util.INFISICAL_PROJECT_ID_NAME}, "")
+	if err != nil {
+		util.HandleError(err, "Unable to parse flag")
+	}
+
+	if token == nil && projectId == "" {
+		_, err := util.GetWorkSpaceFromFile()
+		if err != nil {
+			util.PrintErrorMessageAndExit("Please either run infisical init to connect to a project or pass in project id with --projectId flag")
+		}
+	}
+
+	secretsPath := util.ResolveSecretPath(cmd)
+
+	secretType, err := cmd.Flags().GetString("type")
+	if err != nil || (secretType != util.SECRET_TYPE_SHARED && secretType != util.SECRET_TYPE_PERSONAL) {
+		util.HandleError(err, "Unable to parse secret type")
+	}
+
+	outputFormat, err := cmd.Flags().GetString("output")
+	if err != nil {
+		util.HandleError(err, "Unable to parse flag")
+	}
+
+	tags, err := cmd.Flags().GetStringArray("tag")
+	if err != nil {
+		util.HandleError(err, `Unable to parse "tag" flag`)
+	}
+
+	showValues, err := cmd.Flags().GetBool("show-values")
+	if err != nil {
+		util.HandleError(err, "Unable to parse flag")
+	}
+
+	processedArgs := []string{}
+	for _, arg := range args {
+		splitKeyValue := strings.SplitN(arg, "=", 2)
+		if len(splitKeyValue) != 2 {
+			util.HandleError(fmt.Errorf("invalid argument format: %s. Expected format: key=value or key=@filepath", arg), "")
+		}
+
+		key := splitKeyValue[0]
+		value := splitKeyValue[1]
+
+		if strings.HasPrefix(value, "\\@") {
+			value = "@" + value[2:]
+		} else if strings.HasPrefix(value, "@") {
+			filePath := strings.TrimPrefix(value, "@")
+			content, err := os.ReadFile(filePath)
+			if err != nil {
+				util.HandleError(err, fmt.Sprintf("Unable to read file %s", filePath))
+			}
+			value = string(content)
+		}
+
+		processedArgs = append(processedArgs, fmt.Sprintf("%s=%s", key, value))
+	}
+
+	file, err := cmd.Flags().GetString("file")
+	if err != nil {
+		util.HandleError(err, "Unable to parse flag")
+	}
+
+	var secretOperations []models.SecretSetOperation
+	if token != nil && (token.Type == util.SERVICE_TOKEN_IDENTIFIER || token.Type == util.UNIVERSAL_AUTH_TOKEN_IDENTIFIER) {
+		if projectId == "" {
+			util.PrintErrorMessageAndExit("When using service tokens or machine identities, you must set the --projectId flag")
+		}
+
+		secretOperations, err = util.SetRawSecrets(args, secretType, environmentName, secretsPath, projectId, token, file, tags)
+
+		if err != nil {
+			util.HandleError(err, "Unable to set secrets")
+		}
+	} else {
+		if projectId == "" {
+			workspaceFile, err := util.GetWorkSpaceFromFile()
+			if err != nil {
+				util.PrintErrorMessageAndExit("Please either run infisical init to connect to a project or pass in project id with --projectId flag")
+			}
+
+			projectId = workspaceFile.WorkspaceId
+		}
+
+		loggedInUserDetails, err := util.GetCurrentLoggedInUserDetails(true)
+		if err != nil {
+			util.HandleError(err, "unable to authenticate [err=%v]")
+		}
+
+		if loggedInUserDetails.LoginExpired {
+			loggedInUserDetails = util.EstablishUserLoginSession()
+		}
+
+		secretOperations, err = util.SetRawSecrets(processedArgs, secretType, environmentName, secretsPath, projectId, &models.TokenDetails{
+			Type:  "",
+			Token: loggedInUserDetails.UserCredentials.JTWToken,
+		}, file, tags)
+
+		if err != nil {
+			util.HandleError(err, "Unable to set secrets")
+		}
+	}
+
+	// Print secret operations
+	headers := [...]string{"SECRET NAME", "SECRET VALUE", "STATUS"}
+	rows := [][3]string{}
+	for _, secretOperation := range secretOperations {
+		secretValue := secretOperation.SecretValue
+		if !showValues {
+			secretValue = maskSecretValue(secretValue)
+		}
+		rows = append(rows, [...]string{secretOperation.SecretKey, secretValue, secretOperation.SecretOperation})
+	}
+
+	if outputFormat != "" {
+
+		var outputStructure []map[string]any
+		for _, secretOperation := range secretOperations {
+			outputStructure = append(outputStructure, map[string]any{
+				"secretKey":   secretOperation.SecretKey,
+				"secretValue": secretOperation.SecretValue,
+				"operation":   secretOperation.SecretOperation,
+			})
+		}
+
+		output, err := util.FormatOutput(outputFormat, outputStructure, &util.FormatOutputOptions{
+			DotEnvArrayKeyAttribute:   "secretKey",
+			DotEnvArrayValueAttribute: "secretValue",
+		})
+
+		if err != nil {
+			util.HandleError(err, "Unable to format output")
+		}
+		util.PrintStdout(output)
+	} else {
+		visualize.Table(headers, rows)
+	}
+	Telemetry.CaptureEvent("cli-command:secrets set", posthog.NewProperties().Set("version", util.CLI_VERSION))
+}
+
+func runSecretsDelete(cmd *cobra.Command, args []string) {
+	environmentName := util.ResolveEnvironmentName(cmd)
+
+	token, err := util.GetInfisicalToken(cmd)
+	if err != nil {
+		util.HandleError(err, "Unable to parse flag")
+	}
+
+	projectId, err := util.GetCmdFlagOrEnvWithDefaultValue(cmd, "projectId", []string{util.INFISICAL_PROJECT_ID_NAME}, "")
+	if err != nil {
+		util.HandleError(err, "Unable to parse flag")
+	}
+
+	secretsPath := util.ResolveSecretPath(cmd)
+
+	secretType, err := cmd.Flags().GetString("type")
+	if err != nil {
+		util.HandleError(err, "Unable to parse flag")
+	}
+
+	outputFormat, err := cmd.Flags().GetString("output")
+	if err != nil {
+		util.HandleError(err, "Unable to parse flag")
+	}
+
+	httpClient, err := util.GetRestyClientWithCustomHeaders()
+	if err != nil {
+		util.HandleError(err, "Unable to get resty client with custom headers")
+	}
+
+	httpClient.SetHeader("Accept", "application/json")
+
+	if projectId == "" {
+		workspaceFile, err := util.GetWorkSpaceFromFile()
+		if err != nil {
+			util.PrintErrorMessageAndExit("Please either run infisical init to connect to a project or pass in project id with --projectId flag")
+		}
+		projectId = workspaceFile.WorkspaceId
+	}
+
+	if token != nil && (token.Type == util.SERVICE_TOKEN_IDENTIFIER || token.Type == util.UNIVERSAL_AUTH_TOKEN_IDENTIFIER) {
+		httpClient.SetAuthToken(token.Token)
+	} else {
+		util.RequireLogin()
+
+		loggedInUserDetails, err := util.GetCurrentLoggedInUserDetails(true)
+		if err != nil {
+			util.HandleError(err, "Unable to authenticate")
+		}
+
+		if loggedInUserDetails.LoginExpired {
+			loggedInUserDetails = util.EstablishUserLoginSession()
+		}
+
+		httpClient.SetAuthToken(loggedInUserDetails.UserCredentials.JTWToken)
+	}
+
+	for _, secretName := range args {
+		request := api.DeleteSecretV3Request{
+			WorkspaceId: projectId,
+			Environment: environmentName,
+			SecretName:  secretName,
+			Type:        secretType,
+			SecretPath:  secretsPath,
+		}
+
+		err = api.CallDeleteSecretsRawV3(httpClient, request)
+		if err != nil {
+			util.HandleError(err, "Unable to complete your delete request")
+		}
+	}
+
+	if outputFormat != "" {
+		var outputStructure []map[string]any
+		for _, secretName := range args {
+			outputStructure = append(outputStructure, map[string]any{
+				"secretKey": secretName,
+			})
+		}
+		output, err := util.FormatOutput(outputFormat, outputStructure, &util.FormatOutputOptions{
+			DotEnvArrayKeyAttribute: "secretKey",
+		})
+		if err != nil {
+			util.HandleError(err, "Unable to format output")
+		}
+		util.PrintStdout(output)
+	} else {
+		util.PrintfStderr("secret name(s) [%v] have been deleted from your project \n", strings.Join(args, ", "))
+	}
+
+	Telemetry.CaptureEvent("cli-command:secrets delete", posthog.NewProperties().Set("secretCount", len(args)).Set("version", util.CLI_VERSION))
+}
+
+func getSecretsByNames(cmd *cobra.Command, args []string) {
+	environmentName := util.ResolveEnvironmentName(cmd)
+
+	token, err := util.GetInfisicalToken(cmd)
+	if err != nil {
+		util.HandleError(err, "Unable to parse flag")
+	}
+
+	shouldExpand, err := cmd.Flags().GetBool("expand")
+	if err != nil {
+		util.HandleError(err, "Unable to parse flag")
+	}
+
+	tagSlugs, err := cmd.Flags().GetString("tags")
+	if err != nil {
+		util.HandleError(err, "Unable to parse flag")
+	}
+
+	projectId, err := util.GetCmdFlagOrEnvWithDefaultValue(cmd, "projectId", []string{util.INFISICAL_PROJECT_ID_NAME}, "")
+	if err != nil {
+		util.HandleError(err, "Unable to parse flag")
+	}
+
+	secretsPath := util.ResolveSecretPath(cmd)
+
+	recursive, err := cmd.Flags().GetBool("recursive")
+	if err != nil {
+		util.HandleError(err, "Unable to parse recursive flag")
+	}
+
+	outputFormat, err := cmd.Flags().GetString("output")
+	if err != nil {
+		util.HandleError(err, "Unable to parse flag")
+	}
+
+	// deprecated, in favor of --plain
+	showOnlyValue, err := cmd.Flags().GetBool("raw-value")
+	if err != nil {
+		util.HandleError(err, "Unable to parse flag")
+	}
+
+	plainOutput, err := cmd.Flags().GetBool("plain")
+	if err != nil {
+		util.HandleError(err, "Unable to parse flag")
+	}
+
+	if showOnlyValue {
+		plainOutput = true
+	}
+
+	includeImports, err := cmd.Flags().GetBool("include-imports")
+	if err != nil {
+		util.HandleError(err, "Unable to parse flag")
+	}
+
+	secretOverriding, err := cmd.Flags().GetBool("secret-overriding")
+	if err != nil {
+		util.HandleError(err, "Unable to parse flag")
+	}
+
+	request := models.GetAllSecretsParameters{
+		Environment:              environmentName,
+		WorkspaceId:              projectId,
+		TagSlugs:                 tagSlugs,
+		SecretsPath:              secretsPath,
+		IncludeImport:            includeImports,
+		Recursive:                recursive,
+		ExpandSecretReferences:   shouldExpand,
+		IncludePersonalOverrides: secretOverriding,
+	}
+
+	if token != nil && token.Type == util.SERVICE_TOKEN_IDENTIFIER {
+		request.InfisicalToken = token.Token
+	} else if token != nil && token.Type == util.UNIVERSAL_AUTH_TOKEN_IDENTIFIER {
+		request.UniversalAuthAccessToken = token.Token
+	}
+
+	secrets, err := util.GetAllEnvironmentVariables(request, "")
+	if err != nil {
+		util.HandleError(err, "To fetch all secrets")
+	}
+
+	requestedSecrets := []models.SingleEnvironmentVariable{}
+
+	secretsMap := getSecretsByKeys(secrets)
+
+	for _, secretKeyFromArg := range args {
+		if value, ok := secretsMap[secretKeyFromArg]; ok {
+			requestedSecrets = append(requestedSecrets, value)
+		} else {
+			if !plainOutput {
+				requestedSecrets = append(requestedSecrets, models.SingleEnvironmentVariable{
+					Key:   secretKeyFromArg,
+					Type:  "*not found*",
+					Value: "*not found*",
+				})
+			}
+		}
+	}
+
+	if outputFormat != "" && !plainOutput {
+
+		var outputStructure []map[string]any
+		for _, secret := range requestedSecrets {
+			outputStructure = append(outputStructure, map[string]any{
+				"secretKey":   secret.Key,
+				"secretValue": secret.Value,
+			})
+		}
+
+		output, err := util.FormatOutput(outputFormat, outputStructure, &util.FormatOutputOptions{
+			DotEnvArrayKeyAttribute:   "secretKey",
+			DotEnvArrayValueAttribute: "secretValue",
+		})
+		if err != nil {
+			util.HandleError(err, "Unable to format output")
+		}
+
+		util.PrintStdout(output)
+	} else {
+
+		// showOnlyValue deprecated in favor of --plain, below only for backward compatibility
+		if plainOutput {
+			for _, secret := range requestedSecrets {
+				util.PrintlnStdout(secret.Value)
+			}
+		} else {
+			visualize.PrintAllSecretDetails(requestedSecrets)
+		}
+	}
+
+	Telemetry.CaptureEvent("cli-command:secrets get", posthog.NewProperties().Set("secretCount", len(secrets)).Set("version", util.CLI_VERSION))
+}
+
+func generateExampleEnv(cmd *cobra.Command, args []string) {
+	environmentName := util.ResolveEnvironmentName(cmd)
+
+	secretsPath := util.ResolveSecretPath(cmd)
+
+	token, err := util.GetInfisicalToken(cmd)
+	if err != nil {
+		util.HandleError(err, "Unable to parse flag")
+	}
+
+	projectId, err := util.GetCmdFlagOrEnvWithDefaultValue(cmd, "projectId", []string{util.INFISICAL_PROJECT_ID_NAME}, "")
+	if err != nil {
+		util.HandleError(err, "Unable to parse flag")
+	}
+
+	tagSlugs, err := cmd.Flags().GetString("tags")
+	if err != nil {
+		util.HandleError(err, "Unable to parse flag")
+	}
+
+	request := models.GetAllSecretsParameters{
+		Environment:   environmentName,
+		WorkspaceId:   projectId,
+		TagSlugs:      tagSlugs,
+		SecretsPath:   secretsPath,
+		IncludeImport: true,
+	}
+
+	if token != nil && token.Type == util.SERVICE_TOKEN_IDENTIFIER {
+		request.InfisicalToken = token.Token
+	} else if token != nil && token.Type == util.UNIVERSAL_AUTH_TOKEN_IDENTIFIER {
+		request.UniversalAuthAccessToken = token.Token
+	}
+
+	secrets, err := util.GetAllEnvironmentVariables(request, "")
+	if err != nil {
+		util.HandleError(err, "To fetch all secrets")
+	}
+
+	tagsHashToSecretKey := make(map[string]int)
+	slugsToFilerBy := make(map[string]int)
+
+	for _, slug := range strings.Split(tagSlugs, ",") {
+		slugsToFilerBy[slug] = 1
+	}
+
+	type TagsAndSecrets struct {
+		Secrets []models.SingleEnvironmentVariable
+		Tags    []models.Tag
+	}
+
+	// sort secrets by associated tags (most number of tags to least tags)
+	sort.Slice(secrets, func(i, j int) bool {
+		return len(secrets[i].Tags) > len(secrets[j].Tags)
+	})
+
+	for i, secret := range secrets {
+		filteredTag := []models.Tag{}
+
+		for _, secretTag := range secret.Tags {
+			_, exists := slugsToFilerBy[secretTag.Slug]
+			if !exists {
+				filteredTag = append(filteredTag, secretTag)
+			}
+		}
+
+		secret.Tags = filteredTag
+		secrets[i] = secret
+	}
+
+	for _, secret := range secrets {
+		listOfTagSlugs := []string{}
+
+		for _, tag := range secret.Tags {
+			listOfTagSlugs = append(listOfTagSlugs, tag.Slug)
+		}
+		sort.Strings(listOfTagSlugs)
+
+		tagsHash := util.GetHashFromStringList(listOfTagSlugs)
+
+		tagsHashToSecretKey[tagsHash] += 1
+	}
+
+	finalTagHashToSecretKey := make(map[string]TagsAndSecrets)
+
+	for _, secret := range secrets {
+		listOfTagSlugs := []string{}
+		for _, tag := range secret.Tags {
+			listOfTagSlugs = append(listOfTagSlugs, tag.Slug)
+		}
+
+		// sort the slug so we get the same hash each time
+		sort.Strings(listOfTagSlugs)
+
+		tagsHash := util.GetHashFromStringList(listOfTagSlugs)
+		occurrence, exists := tagsHashToSecretKey[tagsHash]
+		if exists && occurrence > 0 {
+
+			value, exists2 := finalTagHashToSecretKey[tagsHash]
+			allSecretsForTags := append(value.Secrets, secret)
+
+			// sort the the secrets by keys so that they can later be sorted by the first item in the secrets array
+			sort.Slice(allSecretsForTags, func(i, j int) bool {
+				return allSecretsForTags[i].Key < allSecretsForTags[j].Key
+			})
+
+			if exists2 {
+				finalTagHashToSecretKey[tagsHash] = TagsAndSecrets{
+					Tags:    secret.Tags,
+					Secrets: allSecretsForTags,
+				}
+			} else {
+				finalTagHashToSecretKey[tagsHash] = TagsAndSecrets{
+					Tags:    secret.Tags,
+					Secrets: []models.SingleEnvironmentVariable{secret},
+				}
+			}
+
+			tagsHashToSecretKey[tagsHash] -= 1
+		}
+	}
+
+	// sort the fianl result by secret key fo consistent print order
+	listOfsecretDetails := make([]TagsAndSecrets, 0, len(finalTagHashToSecretKey))
+	for _, secretDetails := range finalTagHashToSecretKey {
+		listOfsecretDetails = append(listOfsecretDetails, secretDetails)
+	}
+
+	// sort the order of the headings by the order of the secrets
+	sort.Slice(listOfsecretDetails, func(i, j int) bool {
+		return len(listOfsecretDetails[i].Tags) < len(listOfsecretDetails[j].Tags)
+	})
+
+	tableOfContents := []string{}
+	fullyGeneratedDocuments := []string{}
+	for _, secretDetails := range listOfsecretDetails {
+		listOfKeyValue := []string{}
+
+		for _, secret := range secretDetails.Secrets {
+			re := regexp.MustCompile(`(?s)(.*)DEFAULT:(.*)`)
+			match := re.FindStringSubmatch(secret.Comment)
+			defaultValue := ""
+			comment := secret.Comment
+
+			// Case: Only has default value
+			if len(match) == 2 {
+				defaultValue = strings.TrimSpace(match[1])
+			}
+
+			// Case: has a comment and a default value
+			if len(match) == 3 {
+				comment = match[1]
+				defaultValue = match[2]
+			}
+
+			row := ""
+			if comment != "" {
+				comment = addHash(comment)
+				row = fmt.Sprintf("%s \n%s=%s", strings.TrimSpace(comment), strings.TrimSpace(secret.Key), strings.TrimSpace(defaultValue))
+			} else {
+				row = fmt.Sprintf("%s=%s", strings.TrimSpace(secret.Key), strings.TrimSpace(defaultValue))
+			}
+
+			// each secret row to be added to the file
+			listOfKeyValue = append(listOfKeyValue, row)
+		}
+
+		listOfTagNames := []string{}
+		for _, tag := range secretDetails.Tags {
+			listOfTagNames = append(listOfTagNames, tag.Name)
+		}
+
+		heading := CenterString(strings.Join(listOfTagNames, " & "), 80)
+
+		if len(listOfTagNames) == 0 {
+			fullyGeneratedDocuments = append(fullyGeneratedDocuments, fmt.Sprintf("\n%s \n", strings.Join(listOfKeyValue, "\n")))
+		} else {
+			fullyGeneratedDocuments = append(fullyGeneratedDocuments, fmt.Sprintf("\n\n\n%s \n%s \n", heading, strings.Join(listOfKeyValue, "\n")))
+			tableOfContents = append(tableOfContents, strings.ToUpper(strings.Join(listOfTagNames, " & ")))
+		}
+	}
+
+	dashedList := []string{}
+	for _, item := range tableOfContents {
+		dashedList = append(dashedList, fmt.Sprintf("# - %s \n", item))
+	}
+	if len(dashedList) > 0 {
+		util.PrintlnStdout(CenterString("TABLE OF CONTENTS", 80))
+		util.PrintlnStdout(strings.Join(dashedList, ""))
+	}
+	util.PrintlnStdout(strings.Join(fullyGeneratedDocuments, ""))
+
+	Telemetry.CaptureEvent("cli-command:generate-example-env", posthog.NewProperties().Set("secretCount", len(secrets)).Set("version", util.CLI_VERSION))
+}
+
+func CenterString(s string, numStars int) string {
+	stars := strings.Repeat("*", numStars)
+	padding := (numStars - len(s)) / 2
+	cenetredTextWithStar := stars[:padding] + " " + s + " " + stars[padding:]
+
+	hashes := strings.Repeat("#", len(cenetredTextWithStar)+2)
+	return fmt.Sprintf("%s \n# %s \n%s", hashes, cenetredTextWithStar, hashes)
+}
+
+func addHash(input string) string {
+	lines := strings.Split(input, "\n")
+	for i, line := range lines {
+		lines[i] = "# " + line
+	}
+	return strings.Join(lines, "\n")
+}
+
+func getSecretsByKeys(secrets []models.SingleEnvironmentVariable) map[string]models.SingleEnvironmentVariable {
+	secretMapByName := make(map[string]models.SingleEnvironmentVariable, len(secrets))
+
+	for _, secret := range secrets {
+		secretMapByName[secret.Key] = secret
+	}
+
+	return secretMapByName
+}
+
+func buildSecretsCmd() *cobra.Command {
+	secretsCmd := &cobra.Command{
+		Example:               `infisical secrets`,
+		Short:                 "Used to create, read update and delete secrets",
+		Use:                   "secrets",
+		DisableFlagsInUseLine: true,
+		Args:                  cobra.NoArgs,
+		Run:                   runSecrets,
+	}
+
+	secretsGetCmd := &cobra.Command{
+		Example:               `secrets get <secret name A> <secret name B>..."`,
+		Short:                 "Used to retrieve secrets by name",
+		Use:                   "get [secrets]",
+		DisableFlagsInUseLine: true,
+		Args:                  cobra.MinimumNArgs(1),
+		Run:                   getSecretsByNames,
+	}
+
+	secretsGenerateExampleEnvCmd := &cobra.Command{
+		Example:               `secrets generate-example-env > .example-env`,
+		Short:                 "Used to generate a example .env file",
+		Use:                   "generate-example-env",
+		DisableFlagsInUseLine: true,
+		Args:                  cobra.NoArgs,
+		Run:                   generateExampleEnv,
+	}
+
+	secretsSetCmd := &cobra.Command{
+		Example:               `secrets set <secretName=secretValue> <secretName=secretValue> <secretName=@/path/to/file>..."`,
+		Short:                 "Used set secrets",
+		Use:                   "set [secrets]",
+		DisableFlagsInUseLine: true,
+		Args:                  validateSecretsSetArgs,
+		Run:                   runSecretsSet,
+	}
+
+	secretsDeleteCmd := &cobra.Command{
+		Example:               `secrets delete <secret name A> <secret name B>..."`,
+		Short:                 "Used to delete secrets by name",
+		Use:                   "delete [secrets]",
+		DisableFlagsInUseLine: true,
+		Args:                  cobra.MinimumNArgs(1),
+		Run:                   runSecretsDelete,
+	}
+
+	// not doing this one
+	secretsGenerateExampleEnvCmd.Flags().String("token", "", "Fetch secrets using service token or machine identity access token")
+	secretsGenerateExampleEnvCmd.Flags().String("projectId", "", "manually set the projectId when using machine identity based auth")
+	secretsGenerateExampleEnvCmd.Flags().String("path", "/", "Fetch secrets from within a folder path")
+	secretsCmd.AddCommand(secretsGenerateExampleEnvCmd)
+
+	secretsGetCmd.Flags().String("token", "", "Fetch secrets using service token or machine identity access token")
+	secretsGetCmd.Flags().String("projectId", "", "manually set the project ID to fetch secrets from when using machine identity based auth")
+	secretsGetCmd.Flags().String("path", "/", "get secrets within a folder path")
+	secretsGetCmd.Flags().Bool("plain", false, "print values without formatting, one per line")
+	secretsGetCmd.Flags().Bool("raw-value", false, "deprecated. Returns only the value of secret, only works with one secret. Use --plain instead")
+	secretsGetCmd.Flags().MarkHidden("raw-value") // hide from --help output
+	secretsGetCmd.Flags().Bool("include-imports", true, "Imported linked secrets ")
+	secretsGetCmd.Flags().Bool("expand", true, "Parse shell parameter expansions in your secrets, and process your referenced secrets")
+	secretsGetCmd.Flags().Bool("recursive", false, "Fetch secrets from all sub-folders")
+	secretsGetCmd.Flags().Bool("secret-overriding", true, "Prioritizes personal secrets, if any, with the same name over shared secrets")
+	util.AddOutputFlagsToCmd(secretsGetCmd, "The output to format the secrets in.")
+	secretsCmd.AddCommand(secretsGetCmd)
+
+	secretsCmd.AddCommand(secretsSetCmd)
+	secretsSetCmd.Flags().String("token", "", "Fetch secrets using service token or machine identity access token")
+	secretsSetCmd.Flags().String("projectId", "", "manually set the project ID to for setting secrets when using machine identity based auth")
+	secretsSetCmd.Flags().String("path", "/", "set secrets within a folder path")
+	secretsSetCmd.Flags().String("type", util.SECRET_TYPE_SHARED, "the type of secret to create: personal or shared")
+	secretsSetCmd.Flags().String("file", "", "Load secrets from the specified file. File format: .env or YAML (comments: # or //). This option is mutually exclusive with command-line secrets arguments.")
+	secretsSetCmd.Flags().StringArray("tag", []string{}, "Tags to associate with the secret. Can be specified multiple times (e.g. --tag backend --tag production). When updating an existing secret, the provided tags will replace any existing tags")
+	secretsSetCmd.Flags().Bool("show-values", false, "reveal secret values in the output table instead of masking them")
+	util.AddOutputFlagsToCmd(secretsSetCmd, "The output to format the secrets in.")
+
+	secretsDeleteCmd.Flags().String("type", "personal", "the type of secret to delete: personal or shared  (default: personal)")
+	secretsDeleteCmd.Flags().String("token", "", "Fetch secrets using service token or machine identity access token")
+	secretsDeleteCmd.Flags().String("projectId", "", "manually set the projectId to delete secrets from when using machine identity based auth")
+	secretsDeleteCmd.Flags().String("path", "/", "get secrets within a folder path")
+	util.AddOutputFlagsToCmd(secretsDeleteCmd, "The output to format the secrets in.")
+	secretsCmd.AddCommand(secretsDeleteCmd)
+
+	secretsCmd.AddCommand(buildFolderCmd())
+	secretsCmd.AddCommand(buildAgentProxyCmd())
+
+	secretsCmd.Flags().String("token", "", "Fetch secrets using service token or machine identity access token")
+	secretsCmd.Flags().String("projectId", "", "manually set the projectId to fetch secrets when using machine identity based auth")
+	secretsCmd.PersistentFlags().String("env", "dev", "Used to select the environment name on which actions should be taken on")
+	secretsCmd.Flags().Bool("expand", true, "Parse shell parameter expansions in your secrets, and process your referenced secrets")
+	secretsCmd.Flags().Bool("include-imports", true, "Imported linked secrets ")
+	secretsCmd.Flags().Bool("recursive", false, "Fetch secrets from all sub-folders")
+	secretsCmd.PersistentFlags().StringP("tags", "t", "", "filter secrets by tag slugs")
+	secretsCmd.Flags().String("path", "/", "get secrets within a folder path")
+	secretsCmd.Flags().Bool("plain", false, "print values without formatting, one per line (deprecated, use --output instead)")
+	secretsCmd.Flags().Bool("secret-overriding", true, "Prioritizes personal secrets, if any, with the same name over shared secrets")
+	util.AddOutputFlagsToCmd(secretsCmd, "The output to format the secrets in.")
+
+	return secretsCmd
+}

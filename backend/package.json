@@ -110,7 +110,9 @@
     "websocket-driver": "^0.7.5",
     "botframework-streaming": {
       "ws": "7.5.13"
-    }
+    },
+    "toml": "^5.0.1",
+    "esbuild": "^0.28.1"
   },
   "devDependencies": {
     "@react-email/preview-server": "^5.0.6",

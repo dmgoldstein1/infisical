@@ -79,20 +79,6 @@ func FilterRequestID(input string) string {
 	input = reqIDPattern.ReplaceAllString(input, "[reqId=<unknown-value>]")
 	input = requestIdPattern.ReplaceAllString(input, "Request ID: <unknown-value>")
 
-	// The throwaway backend mints a fresh project ID on every run, so it can
-	// never appear literally in a snapshot. Mask it the same way. Secret
-	// names and values are deliberately NOT masked: they are the assertions.
-	if creds.ProjectID != "" {
-		input = strings.ReplaceAll(input, creds.ProjectID, "<project-id>")
-	}
-
-	// The harness publishes the backend on a random host port per run, so the
-	// instance domain is per-run too. A wrong-host bug cannot hide behind
-	// this: requests to the wrong host fail outright instead of snapshotting.
-	if domain := os.Getenv("INFISICAL_DOMAIN"); domain != "" {
-		input = strings.ReplaceAll(input, strings.TrimRight(domain, "/"), "<instance>")
-	}
-
 	start := strings.Index(input, "{")
 	end := strings.LastIndex(input, "}") + 1
 

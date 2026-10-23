@@ -45,7 +45,8 @@
     },
     "@eslint/eslintrc": {
       "minimatch": "^3.1.2"
-    }
+    },
+    "esbuild": "^0.28.1"
   },
   "dependencies": {
     "@base-ui/react": "^1.7.0",

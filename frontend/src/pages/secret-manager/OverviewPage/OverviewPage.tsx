@@ -4573,10 +4573,11 @@ const OverviewPageContent = () => {
         </DialogContent>
       </Dialog>
       <AlertDialog
+        isPending={deleteDynamicSecret.isPending}
         open={popUp.deleteDynamicSecret.isOpen}
         confirmationValue={dynamicSecretDeleteData?.name}
         onOpenChange={(isOpen) => {
-          if (!deleteDynamicSecret.isPending) handlePopUpToggle("deleteDynamicSecret", isOpen);
+          handlePopUpToggle("deleteDynamicSecret", isOpen);
         }}
       >
         <AlertDialogContent>
@@ -4597,20 +4598,16 @@ const OverviewPageContent = () => {
           </AlertDialogHeader>
           <AlertDialogConfirmationField
             inputProps={{
-              disabled: deleteDynamicSecret.isPending,
               placeholder: `Type ${dynamicSecretDeleteData?.name ?? "the dynamic secret name"} here`
             }}
             onConfirm={() => {
-              if (!deleteDynamicSecret.isPending) {
-                handleDynamicSecretDelete().catch(() => undefined);
-              }
+              handleDynamicSecretDelete().catch(() => undefined);
             }}
           />
           <AlertDialogFooter>
-            <AlertDialogCancel isDisabled={deleteDynamicSecret.isPending}>Cancel</AlertDialogCancel>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
             <AlertDialogAction
               variant="danger"
-              isPending={deleteDynamicSecret.isPending}
               onClick={(event) => {
                 event.preventDefault();
                 handleDynamicSecretDelete().catch(() => undefined);

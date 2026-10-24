@@ -1,0 +1,6 @@
+[Unit]
+Description=Infisical deployment network (Podman quadlet)
+
+[Network]
+Driver=bridge
+Label=app=infisical

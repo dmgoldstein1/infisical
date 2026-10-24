@@ -1,0 +1,22 @@
+[Unit]
+Description=Infisical Redis cache (Podman quadlet)
+After=network-online.target
+
+[Container]
+Image=docker.io/library/redis:7
+ContainerName=infisical-redis
+Network=infisical.network
+# Reachable as "redis" (matches docker-compose service DNS used by the backend).
+NetworkAlias=redis
+EnvironmentFile=infisical.env
+Volume=infisical-redis.volume:/data
+HealthCmd=redis-cli ping
+HealthInterval=10s
+HealthRetries=5
+Label=app=infisical role=redis
+
+[Service]
+Restart=always
+
+[Install]
+WantedBy=default.target

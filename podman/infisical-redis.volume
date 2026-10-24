@@ -1,0 +1,5 @@
+[Unit]
+Description=Infisical Redis data volume (Podman quadlet)
+
+[Volume]
+Label=app=infisical

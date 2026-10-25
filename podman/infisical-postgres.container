@@ -1,0 +1,26 @@
+[Unit]
+Description=Infisical PostgreSQL database (Podman quadlet)
+After=network-online.target
+
+[Container]
+Image=docker.io/library/postgres:14-alpine
+ContainerName=infisical-db
+Network=infisical.network
+# Reachable as "db" (matches docker-compose service DNS used by the backend).
+NetworkAlias=db
+EnvironmentFile=infisical.env
+Volume=infisical-postgres.volume:/var/lib/postgresql/data
+HealthCmd=pg_isready -U infisical -d infisical
+HealthInterval=10s
+HealthRetries=5
+# Keep the user/db aligned with POSTGRES_USER/POSTGRES_DB in infisical.env.
+# Re-point HealthCmd if you change them.
+Label=app=infisical role=db
+
+[Service]
+Restart=always
+# Starts before the backend via its Requires=/After=; the backend also
+# retries its DB connection on boot, so no health-gated ordering is needed.
+
+[Install]
+WantedBy=default.target

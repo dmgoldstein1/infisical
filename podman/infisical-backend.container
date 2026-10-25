@@ -1,0 +1,29 @@
+[Unit]
+Description=Infisical backend + frontend, standalone image (Podman quadlet)
+After=network-online.target infisical-postgres.service infisical-redis.service
+Requires=infisical-postgres.service infisical-redis.service
+
+[Container]
+# Pinned release (check https://hub.docker.com/r/infisical/infisical/tags for
+# newer vX.Y.Z and bump deliberately). Never :latest in production.
+# To run a locally patched build instead: podman tag <local-image>
+# docker.io/infisical/infisical:local && set Image=...:local below, or
+# `podman load -i` a tarball and reference it by digest.
+Image=docker.io/infisical/infisical:v0.167.2
+ContainerName=infisical-backend
+Network=infisical.network
+PublishPort=80:8080
+EnvironmentFile=infisical.env
+Environment=NODE_ENV=production
+# Keep the deployment current without compose: podman auto-update pulls the
+# registry tag on a timer (systemd --user timer) when a digest changes.
+AutoUpdate=registry
+Label=app=infisical role=backend
+# No HealthCmd here (mirrors docker-compose.prod.yml): use
+# `podman healthcheck run` or a proxy-side check if you need one.
+
+[Service]
+Restart=always
+
+[Install]
+WantedBy=default.target

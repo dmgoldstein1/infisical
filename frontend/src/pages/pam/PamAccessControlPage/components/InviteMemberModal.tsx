@@ -16,7 +16,7 @@ import {
   Field,
   FieldLabel
 } from "@app/components/v3";
-import { useProject } from "@app/context";
+import { useOrganization, useProject } from "@app/context";
 import { useGetAvailableProjectUsers, useGetWorkspaceUsers } from "@app/hooks/api";
 import { useAddPamProductUserMember } from "@app/hooks/api/pam";
 import { ProjectMembershipRole } from "@app/hooks/api/roles/types";
@@ -39,6 +39,7 @@ const getUserLabel = ({ firstName, lastName, email, username }: TAvailableProjec
 
 export const InviteMemberModal = ({ isOpen, onOpenChange }: Props) => {
   const { currentProject } = useProject();
+  const { currentOrg } = useOrganization();
   const { mutate: addUser, isPending } = useAddPamProductUserMember();
   const navigate = useNavigate();
 
@@ -84,7 +85,11 @@ export const InviteMemberModal = ({ isOpen, onOpenChange }: Props) => {
 
   const clearRequesterEmail = () => {
     if (requesterEmail) {
-      navigate({ search: (prev) => ({ ...prev, requesterEmail: "" }) });
+      navigate({
+        to: "/organizations/$orgId/pam/access-management",
+        search: (prev) => ({ ...prev, requesterEmail: "" }),
+        params: { orgId: currentOrg.id }
+      });
     }
   };
 

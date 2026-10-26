@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { useNavigate } from "@tanstack/react-router";
+import { Link, useNavigate } from "@tanstack/react-router";
 import { formatDistanceToNow } from "date-fns";
 import {
   ChevronDownIcon,
@@ -52,9 +52,9 @@ import {
 } from "@app/components/v3";
 import { OrgPermissionIdentityActions, OrgPermissionSubjects, useOrganization } from "@app/context";
 import {
+  getInstancePinningLink,
   getProjectBaseURL,
-  getProjectDisplayName,
-  pinProjectForNavigation
+  getProjectDisplayName
 } from "@app/helpers/project";
 import {
   getUserTablePreference,
@@ -195,7 +195,7 @@ const LastUsedCell = ({ lastLoginAuthMethod, lastLoginTime }: LastUsedCellProps)
   return (
     <Tooltip>
       <TooltipTrigger asChild>
-        <span className="cursor-default text-sm text-foreground/80">{label}</span>
+        <span className="relative z-10 cursor-default text-sm text-foreground/80">{label}</span>
       </TooltipTrigger>
       <TooltipContent className="max-w-96 min-w-52">
         <LastLoginSection
@@ -396,28 +396,28 @@ const IdentityRow = ({ membership, onDelete, onManageAuth, onAddAuthMethod }: Id
   const isSubOrgIdentity = currentOrg.id === orgId;
   const isProjectScoped = scope === SearchIdentitiesScope.ProjectScope;
 
-  const navigateToIdentity = () => {
-    if (isProjectScoped && project) {
-      pinProjectForNavigation(currentOrg.id, project);
-      navigate({
-        to: `${getProjectBaseURL(project.type)}/identities/$identityId` as const,
-        params: {
-          orgId: currentOrg.id,
-          projectId: project.id,
-          identityId: id
-        }
-      });
-      return;
-    }
-    navigate({
-      to: "/organizations/$orgId/identities/$identityId",
-      params: { identityId: id, orgId: currentOrg.id }
-    });
-  };
+  const identityLink =
+    isProjectScoped && project
+      ? (getInstancePinningLink(currentOrg.id, project, `identities/${id}`) ??
+        ({
+          to: `${getProjectBaseURL(project.type)}/identities/$identityId`,
+          params: { orgId: currentOrg.id, projectId: project.id, identityId: id }
+        } as const))
+      : ({
+          to: "/organizations/$orgId/identities/$identityId",
+          params: { identityId: id, orgId: currentOrg.id }
+        } as const);
 
   return (
-    <TableRow className="cursor-pointer" onClick={navigateToIdentity}>
-      <TableCell isTruncatable>{name}</TableCell>
+    <TableRow className="relative cursor-pointer">
+      <TableCell isTruncatable>
+        <Link
+          {...identityLink}
+          className="block truncate outline-0 after:absolute after:inset-0 after:content-[''] focus-visible:after:ring-2 focus-visible:after:ring-ring"
+        >
+          {name}
+        </Link>
+      </TableCell>
       <TableCell>
         <IdentityRoleBadges roles={membershipRoles ?? []} />
       </TableCell>
@@ -432,7 +432,7 @@ const IdentityRow = ({ membership, onDelete, onManageAuth, onAddAuthMethod }: Id
       <TableCell>
         <LastUsedCell lastLoginAuthMethod={lastLoginAuthMethod} lastLoginTime={lastLoginTime} />
       </TableCell>
-      <TableCell variant="action">
+      <TableCell variant="action" className="relative z-10">
         <div className="flex items-center justify-end gap-2">
           {(activeLockoutAuthMethods?.length ?? 0) > 0 && (
             <Tooltip>
@@ -453,7 +453,7 @@ const IdentityRow = ({ membership, onDelete, onManageAuth, onAddAuthMethod }: Id
             isSubOrgIdentity={isSubOrgIdentity}
             authMethods={authMethods ?? []}
             activeLockoutAuthMethods={activeLockoutAuthMethods}
-            onEdit={navigateToIdentity}
+            onEdit={() => navigate(identityLink)}
             onDelete={() => onDelete({ identityId: id, name })}
             onManageAuth={(authMethod) => onManageAuth({ identityId: id, authMethod })}
             onAddAuthMethod={() =>

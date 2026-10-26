@@ -84,11 +84,7 @@ export const InviteMemberModal = ({ isOpen, onOpenChange }: Props) => {
 
   const clearRequesterEmail = () => {
     if (requesterEmail) {
-      navigate({
-        to: "/organizations/$orgId/pam/access-management",
-        search: (prev) => ({ ...prev, requesterEmail: "" }),
-        params: { orgId: currentOrg.id }
-      });
+      navigate({ search: (prev) => ({ ...prev, requesterEmail: "" }) });
     }
   };
 

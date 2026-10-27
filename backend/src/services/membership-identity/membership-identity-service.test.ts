@@ -244,10 +244,12 @@ describe("deleteMembership org access reconcile", () => {
 
     expect(emit).toHaveBeenCalledTimes(1);
     expect(emit).toHaveBeenCalledWith(
-      {
-        eventType: "com.infisical.organization.membership.removed.v1",
-        payload: { orgId: SUB_ORG_ID, actorType: "identity", actorId: IDENTITY_ID }
-      },
+      [
+        expect.objectContaining({
+          type: "com.infisical.organization.membership.removed.v1",
+          data: { orgId: SUB_ORG_ID, actorType: "identity", actorId: IDENTITY_ID }
+        })
+      ],
       tx
     );
   });

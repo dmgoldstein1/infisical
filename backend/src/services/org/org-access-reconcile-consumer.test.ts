@@ -26,15 +26,14 @@ const GROUP_ID = uuid(30);
 const PROJECT_A = uuid(40);
 const PROJECT_B = uuid(41);
 
-const makeEvent = (type: string, data: Record<string, unknown>, id = "00000000-0000-4000-8000-000000000001"): TEvent =>
-  ({
-    specversion: "1.0",
-    id,
-    source: "urn:infisical:organization",
-    type,
-    time: new Date().toISOString(),
-    data
-  }) as TEvent;
+const makeEvent = (type: string, data: Record<string, unknown>, id = uuid(9000)): TEvent => ({
+  specversion: "1.0",
+  id,
+  source: "infisical",
+  type,
+  time: new Date().toISOString(),
+  data
+});
 const userRemovedFromOrg = (orgId = ORG_ID) =>
   makeEvent(ORG_MEMBERSHIP_REMOVED_EVENT, { orgId, actorType: ActorType.USER, actorId: USER_ID });
 
@@ -331,7 +330,7 @@ describe("org access reconcile consumer", () => {
 
     const [bad, unknown] = await consumer.handle([
       makeEvent(ORG_MEMBERSHIP_REMOVED_EVENT, { orgId: "not-a-uuid" }),
-      makeEvent("com.infisical.organization.something.happened.v1", {}, 2)
+      makeEvent("com.infisical.organization.something.happened.v1", {}, uuid(9001))
     ]);
 
     expect(bad.status).toBe(EventResultStatus.Failed);

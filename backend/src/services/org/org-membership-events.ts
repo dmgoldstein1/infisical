@@ -79,25 +79,11 @@ export const toOrgMembershipActors = ({
   ...[...new Set(identityIds)].map((actorId) => ({ actorType: ActorType.IDENTITY as const, actorId }))
 ];
 
-// The outbox envelope is { id, type, data } (CloudEvents 1.0); every other emit
-// site builds it via defineEvent().build(). These helpers predate that helper,
-// so they wrap the payload here instead.
-const toEventInput = (type: string, data: Record<string, unknown>): TEventInput => ({
-  id: crypto.randomUUID(),
-  type,
-  data
-});
-
-const emitAll = async (eventEmitter: TEventEmitter, events: TEventInput[], tx?: Knex) => {
-  for await (const event of events) {
-    // TEventEmitter.emit takes an array batch; a bare event object has no
-    // flatMap and 500s every membership-removal path (group/user/identity
-    // removal, SCIM delete, org-reconcile). Upstream 37b78f6 shipped the
-    // singular call; this restores the batch contract used by every other
-    // emit site (approval-policy, certificate-alerts, event-definition).
-    await eventEmitter.emit([event], tx);
-  }
-};
+const emitAll = (eventEmitter: TEventEmitter, type: string, payloads: Record<string, unknown>[], tx?: Knex) =>
+  eventEmitter.emit(
+    payloads.map((data): TEventInput => ({ id: crypto.randomUUID(), type, data })),
+    tx
+  );
 
 // An empty list is still one page, so the event still goes out.
 const page = <T>(items: T[], size: number): T[][] => (items.length ? chunkArray(items, size) : [[]]);
@@ -116,9 +102,8 @@ export const emitGroupMembershipRemoved = async (
   if (!actors.length) return;
   await emitAll(
     eventEmitter,
-    pageGroupScope(orgIds, actors).map((scope) =>
-      toEventInput(GROUP_MEMBERSHIP_REMOVED_EVENT, { groupId, ...scope })
-    ),
+    GROUP_MEMBERSHIP_REMOVED_EVENT,
+    pageGroupScope(orgIds, actors).map((scope) => ({ groupId, ...scope })),
     tx
   );
 };
@@ -130,9 +115,8 @@ export const emitGroupLinkRemoved = (
 ) =>
   emitAll(
     eventEmitter,
-    page(members, MEMBERS_PER_EVENT).map((memberPage) =>
-      toEventInput(GROUP_LINK_REMOVED_EVENT, { orgId, groupId, members: memberPage })
-    ),
+    GROUP_LINK_REMOVED_EVENT,
+    page(members, MEMBERS_PER_EVENT).map((memberPage) => ({ orgId, groupId, members: memberPage })),
     tx
   );
 
@@ -143,7 +127,8 @@ export const emitGroupRemoved = (
 ) =>
   emitAll(
     eventEmitter,
-    pageGroupScope(orgIds, members).map((scope) => toEventInput(GROUP_REMOVED_EVENT, { groupId, ...scope })),
+    GROUP_REMOVED_EVENT,
+    pageGroupScope(orgIds, members).map((scope) => ({ groupId, ...scope })),
     tx
   );
 
@@ -154,6 +139,7 @@ export const emitOrgMembershipRemoved = (
 ) =>
   emitAll(
     eventEmitter,
-    actors.map((actor) => toEventInput(ORG_MEMBERSHIP_REMOVED_EVENT, { orgId, ...actor })),
+    ORG_MEMBERSHIP_REMOVED_EVENT,
+    actors.map((actor) => ({ orgId, ...actor })),
     tx
   );

@@ -140,7 +140,7 @@ export const orgAccessReconcileConsumerFactory = ({
   };
 
   const $handleEvent = async (event: TEvent): Promise<TEventConsumerResult> => {
-    const id = String(event.id);
+    const { id } = event;
     let resolveScope: () => Promise<TReconcileScope>;
     try {
       resolveScope = $parseScope(event);
@@ -188,10 +188,6 @@ export const orgAccessReconcileConsumerFactory = ({
 
   return {
     name: ORG_ACCESS_RECONCILE_CONSUMER,
-    // IEventConsumer requires `dataSchema`: the outbox validates each emitted
-    // event's data against every subscriber's schema at emit time. Upstream
-    // 37b78f6 named this `payloadSchema`, so dataSchema was undefined and
-    // every membership-removal emit crashed after the envelope fix.
     dataSchema: OrgMembershipEventPayloadSchema,
     subscribesTo,
     handle

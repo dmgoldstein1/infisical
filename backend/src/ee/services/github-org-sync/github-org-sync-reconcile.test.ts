@@ -157,14 +157,15 @@ describe("GitHub org sync and org access reconcile", () => {
     expect(emit).toHaveBeenCalledTimes(1);
     expect(emit).toHaveBeenCalledWith(
       [
-        expect.objectContaining({
+        {
+          id: expect.any(String) as string,
           type: GROUP_MEMBERSHIP_REMOVED_EVENT,
           data: {
             groupId: "g-left",
             orgIds: [ORG_ID, SUB_ORG_ID],
             members: [{ actorType: ActorType.USER, actorId: "user-1" }]
           }
-        })
+        }
       ],
       TX
     );
@@ -225,14 +226,15 @@ describe("GitHub org sync and org access reconcile", () => {
     expect(emit).toHaveBeenCalledTimes(1);
     expect(emit).toHaveBeenCalledWith(
       [
-        expect.objectContaining({
+        {
+          id: expect.any(String) as string,
           type: GROUP_MEMBERSHIP_REMOVED_EVENT,
           data: {
             groupId: "g-team",
             orgIds: [ORG_ID, SUB_ORG_ID],
             members: [{ actorType: ActorType.USER, actorId: "user-2" }]
           }
-        })
+        }
       ],
       TX
     );

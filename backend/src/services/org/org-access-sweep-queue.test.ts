@@ -23,15 +23,15 @@ const ORG_A = uuid(1);
 const ORG_B = uuid(2);
 
 const build = (orphans: { actorUserId: string | null; actorIdentityId: string | null; scopeOrgId: string }[]) => {
-  const emitted: TEventInput[] = [];
+  const emitted: TEventInput[][] = [];
   const register = vi.fn();
   const findOrphanedProjectActors = vi.fn().mockResolvedValue(orphans);
   const queue = orgAccessSweepQueueFactory({
     cronJob: { register } as never,
     orgDAL: { findOrphanedProjectActors },
     eventEmitter: {
-      emit: async (event) => {
-        emitted.push(event);
+      emit: async (events: TEventInput[]) => {
+        emitted.push(events);
       }
     }
   });
@@ -52,16 +52,13 @@ describe("orgAccessSweepQueue", () => {
       limit: ORG_ACCESS_SWEEP_LIMIT,
       statementTimeoutMs: ORG_ACCESS_SWEEP_STATEMENT_TIMEOUT_MS
     });
-    expect(emitted).toEqual([
-      {
-        eventType: ORG_MEMBERSHIP_REMOVED_EVENT,
-        payload: { orgId: ORG_A, actorType: ActorType.USER, actorId: uuid(10) }
-      },
-      {
-        eventType: ORG_MEMBERSHIP_REMOVED_EVENT,
-        payload: { orgId: ORG_B, actorType: ActorType.IDENTITY, actorId: uuid(20) }
-      }
-    ]);
+    expect(emitted).toHaveLength(2);
+    expect(emitted[0]).toHaveLength(1);
+    expect(emitted[0][0].type).toBe(ORG_MEMBERSHIP_REMOVED_EVENT);
+    expect(emitted[0][0].data).toEqual({ orgId: ORG_A, actorType: ActorType.USER, actorId: uuid(10) });
+    expect(emitted[1]).toHaveLength(1);
+    expect(emitted[1][0].type).toBe(ORG_MEMBERSHIP_REMOVED_EVENT);
+    expect(emitted[1][0].data).toEqual({ orgId: ORG_B, actorType: ActorType.IDENTITY, actorId: uuid(20) });
     expect(loggerWarn).not.toHaveBeenCalled();
   });
 

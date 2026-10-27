@@ -1,3 +1,5 @@
+import crypto from "node:crypto";
+
 import { Knex } from "knex";
 import { z } from "zod";
 
@@ -77,6 +79,15 @@ export const toOrgMembershipActors = ({
   ...[...new Set(identityIds)].map((actorId) => ({ actorType: ActorType.IDENTITY as const, actorId }))
 ];
 
+// The outbox envelope is { id, type, data } (CloudEvents 1.0); every other emit
+// site builds it via defineEvent().build(). These helpers predate that helper,
+// so they wrap the payload here instead.
+const toEventInput = (type: string, data: Record<string, unknown>): TEventInput => ({
+  id: crypto.randomUUID(),
+  type,
+  data
+});
+
 const emitAll = async (eventEmitter: TEventEmitter, events: TEventInput[], tx?: Knex) => {
   for await (const event of events) {
     // TEventEmitter.emit takes an array batch; a bare event object has no
@@ -103,19 +114,13 @@ export const emitGroupMembershipRemoved = async (
   tx?: Knex
 ) => {
   if (!actors.length) return;
-  try {
-    await emitAll(
+  await emitAll(
     eventEmitter,
-    pageGroupScope(orgIds, actors).map((scope) => ({
-      eventType: GROUP_MEMBERSHIP_REMOVED_EVENT,
-      payload: { groupId, ...scope }
-    })),
+    pageGroupScope(orgIds, actors).map((scope) =>
+      toEventInput(GROUP_MEMBERSHIP_REMOVED_EVENT, { groupId, ...scope })
+    ),
     tx
   );
-  } catch (e) {
-    console.error("DIAG_TRACE emitAll THREW", e);
-    throw e;
-  }
 };
 
 export const emitGroupLinkRemoved = (
@@ -125,10 +130,9 @@ export const emitGroupLinkRemoved = (
 ) =>
   emitAll(
     eventEmitter,
-    page(members, MEMBERS_PER_EVENT).map((memberPage) => ({
-      eventType: GROUP_LINK_REMOVED_EVENT,
-      payload: { orgId, groupId, members: memberPage }
-    })),
+    page(members, MEMBERS_PER_EVENT).map((memberPage) =>
+      toEventInput(GROUP_LINK_REMOVED_EVENT, { orgId, groupId, members: memberPage })
+    ),
     tx
   );
 
@@ -139,10 +143,7 @@ export const emitGroupRemoved = (
 ) =>
   emitAll(
     eventEmitter,
-    pageGroupScope(orgIds, members).map((scope) => ({
-      eventType: GROUP_REMOVED_EVENT,
-      payload: { groupId, ...scope }
-    })),
+    pageGroupScope(orgIds, members).map((scope) => toEventInput(GROUP_REMOVED_EVENT, { groupId, ...scope })),
     tx
   );
 
@@ -153,6 +154,6 @@ export const emitOrgMembershipRemoved = (
 ) =>
   emitAll(
     eventEmitter,
-    actors.map((actor) => ({ eventType: ORG_MEMBERSHIP_REMOVED_EVENT, payload: { orgId, ...actor } })),
+    actors.map((actor) => toEventInput(ORG_MEMBERSHIP_REMOVED_EVENT, { orgId, ...actor })),
     tx
   );

@@ -26,8 +26,15 @@ const GROUP_ID = uuid(30);
 const PROJECT_A = uuid(40);
 const PROJECT_B = uuid(41);
 
-const makeEvent = (eventType: string, payload: Record<string, unknown>, id = 1): TEvent =>
-  ({ id, eventType, payload, occurredAt: new Date() }) as TEvent;
+const makeEvent = (type: string, data: Record<string, unknown>, id = "00000000-0000-4000-8000-000000000001"): TEvent =>
+  ({
+    specversion: "1.0",
+    id,
+    source: "urn:infisical:organization",
+    type,
+    time: new Date().toISOString(),
+    data
+  }) as TEvent;
 const userRemovedFromOrg = (orgId = ORG_ID) =>
   makeEvent(ORG_MEMBERSHIP_REMOVED_EVENT, { orgId, actorType: ActorType.USER, actorId: USER_ID });
 

@@ -156,14 +156,16 @@ describe("GitHub org sync and org access reconcile", () => {
 
     expect(emit).toHaveBeenCalledTimes(1);
     expect(emit).toHaveBeenCalledWith(
-      {
-        eventType: GROUP_MEMBERSHIP_REMOVED_EVENT,
-        payload: {
-          groupId: "g-left",
-          orgIds: [ORG_ID, SUB_ORG_ID],
-          members: [{ actorType: ActorType.USER, actorId: "user-1" }]
-        }
-      },
+      [
+        expect.objectContaining({
+          type: GROUP_MEMBERSHIP_REMOVED_EVENT,
+          data: {
+            groupId: "g-left",
+            orgIds: [ORG_ID, SUB_ORG_ID],
+            members: [{ actorType: ActorType.USER, actorId: "user-1" }]
+          }
+        })
+      ],
       TX
     );
     expect(groupDAL.findGroupOrgIds).toHaveBeenCalledWith("g-left", TX);
@@ -222,14 +224,16 @@ describe("GitHub org sync and org access reconcile", () => {
     expect(userGroupMembershipDAL.delete).toHaveBeenCalledWith({ $in: { id: ["ugm-2"] } }, TX);
     expect(emit).toHaveBeenCalledTimes(1);
     expect(emit).toHaveBeenCalledWith(
-      {
-        eventType: GROUP_MEMBERSHIP_REMOVED_EVENT,
-        payload: {
-          groupId: "g-team",
-          orgIds: [ORG_ID, SUB_ORG_ID],
-          members: [{ actorType: ActorType.USER, actorId: "user-2" }]
-        }
-      },
+      [
+        expect.objectContaining({
+          type: GROUP_MEMBERSHIP_REMOVED_EVENT,
+          data: {
+            groupId: "g-team",
+            orgIds: [ORG_ID, SUB_ORG_ID],
+            members: [{ actorType: ActorType.USER, actorId: "user-2" }]
+          }
+        })
+      ],
       TX
     );
 

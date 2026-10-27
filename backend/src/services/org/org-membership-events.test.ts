@@ -23,15 +23,21 @@ const USER = uuid(10);
 const IDENTITY = uuid(20);
 
 const buildEmitter = () => {
-  const emitted: { event: TEventInput; tx: unknown }[] = [];
+  const emitted: { events: TEventInput[]; tx: unknown }[] = [];
   return {
     emitted,
     eventEmitter: {
-      emit: async (event: TEventInput, tx?: unknown) => {
-        emitted.push({ event, tx });
+      emit: async (events: TEventInput[], tx?: unknown) => {
+        emitted.push({ events, tx });
       }
     }
   };
+};
+
+const expectBatch = (emitted: { events: TEventInput[]; tx: unknown }[], tx: unknown) => {
+  expect(emitted).toHaveLength(1);
+  expect(emitted[0].tx).toBe(tx);
+  return emitted[0].events;
 };
 
 describe("org membership events", () => {
@@ -55,22 +61,20 @@ describe("org membership events", () => {
       TX
     );
 
-    expect(emitted).toEqual([
-      {
-        event: {
-          eventType: GROUP_MEMBERSHIP_REMOVED_EVENT,
-          payload: {
-            groupId: GROUP,
-            orgIds: [ORG],
-            members: [
-              { actorType: ActorType.USER, actorId: USER },
-              { actorType: ActorType.IDENTITY, actorId: IDENTITY }
-            ]
-          }
-        },
-        tx: TX
-      }
-    ]);
+    const events = expectBatch(emitted, TX);
+    expect(events).toHaveLength(1);
+    expect(events[0].type).toBe(GROUP_MEMBERSHIP_REMOVED_EVENT);
+    expect(events[0].id).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+    );
+    expect(events[0].data).toEqual({
+      groupId: GROUP,
+      orgIds: [ORG],
+      members: [
+        { actorType: ActorType.USER, actorId: USER },
+        { actorType: ActorType.IDENTITY, actorId: IDENTITY }
+      ]
+    });
 
     const { emitted: none, eventEmitter: noneEmitter } = buildEmitter();
     await emitGroupMembershipRemoved(noneEmitter, { groupId: GROUP, orgIds: [ORG], actors: [] }, TX);
@@ -82,30 +86,32 @@ describe("org membership events", () => {
     const members = toOrgMembershipActors({ userIds: Array.from({ length: 150 }, (_, i) => uuid(5000 + i)) });
     await emitGroupLinkRemoved(eventEmitter, { orgId: ORG, groupId: GROUP, members }, TX);
 
-    expect(emitted).toHaveLength(2);
-    for (const { event, tx } of emitted) {
+    const linkEvents = emitted.flatMap(({ events, tx }) => {
       expect(tx).toBe(TX);
-      expect(event.eventType).toBe(GROUP_LINK_REMOVED_EVENT);
-      expect(event.payload).toMatchObject({ orgId: ORG, groupId: GROUP });
-      expect((event.payload as { members: unknown[] }).members.length).toBeLessThanOrEqual(100);
+      return events;
+    });
+    expect(linkEvents).toHaveLength(2);
+    for (const event of linkEvents) {
+      expect(event.type).toBe(GROUP_LINK_REMOVED_EVENT);
+      expect(event.data).toMatchObject({ orgId: ORG, groupId: GROUP });
+      expect((event.data as { members: unknown[] }).members.length).toBeLessThanOrEqual(100);
     }
 
     const { emitted: empty, eventEmitter: emptyEmitter } = buildEmitter();
     await emitGroupLinkRemoved(emptyEmitter, { orgId: ORG, groupId: GROUP, members: [] }, TX);
-    expect(empty).toEqual([
-      { event: { eventType: GROUP_LINK_REMOVED_EVENT, payload: { orgId: ORG, groupId: GROUP, members: [] } }, tx: TX }
-    ]);
+    const emptyEvents = expectBatch(empty, TX);
+    expect(emptyEvents).toHaveLength(1);
+    expect(emptyEvents[0].type).toBe(GROUP_LINK_REMOVED_EVENT);
+    expect(emptyEvents[0].data).toEqual({ orgId: ORG, groupId: GROUP, members: [] });
   });
 
   test("group removed still emits for an empty group with only its own org", async () => {
     const { emitted, eventEmitter } = buildEmitter();
     await emitGroupRemoved(eventEmitter, { groupId: GROUP, orgIds: [ORG], members: [] });
-    expect(emitted).toEqual([
-      {
-        event: { eventType: GROUP_REMOVED_EVENT, payload: { groupId: GROUP, orgIds: [ORG], members: [] } },
-        tx: undefined
-      }
-    ]);
+    const removedEvents = expectBatch(emitted, undefined);
+    expect(removedEvents).toHaveLength(1);
+    expect(removedEvents[0].type).toBe(GROUP_REMOVED_EVENT);
+    expect(removedEvents[0].data).toEqual({ groupId: GROUP, orgIds: [ORG], members: [] });
   });
 
   describe.each([
@@ -123,13 +129,16 @@ describe("org membership events", () => {
         await emitGroupMembershipRemoved(eventEmitter, { groupId: GROUP, orgIds, actors: members }, TX);
       }
 
-      expect(emitted).toHaveLength(5 * 3);
-      const covered = new Set<string>();
-      for (const { event, tx } of emitted) {
+      const pagedEvents = emitted.flatMap(({ events, tx }) => {
         expect(tx).toBe(TX);
-        expect(event.eventType).toBe(eventType);
-        expect(Buffer.byteLength(JSON.stringify(event.payload), "utf8")).toBeLessThan(MAX_OUTBOX_PAYLOAD_BYTES);
-        const payload = schema.parse(event.payload);
+        return events;
+      });
+      expect(pagedEvents).toHaveLength(5 * 3);
+      const covered = new Set<string>();
+      for (const event of pagedEvents) {
+        expect(event.type).toBe(eventType);
+        expect(Buffer.byteLength(JSON.stringify(event.data), "utf8")).toBeLessThan(MAX_OUTBOX_PAYLOAD_BYTES);
+        const payload = schema.parse(event.data);
         for (const orgId of payload.orgIds) {
           for (const member of payload.members) covered.add(`${orgId}:${member.actorId}`);
         }
@@ -141,10 +150,9 @@ describe("org membership events", () => {
   test("org membership removed is one event per actor", async () => {
     const { emitted, eventEmitter } = buildEmitter();
     await emitOrgMembershipRemoved(eventEmitter, { orgId: ORG, actors: toOrgMembershipActors({ userIds: [USER] }) });
-    expect(emitted).toHaveLength(1);
-    expect(emitted[0].event).toEqual({
-      eventType: ORG_MEMBERSHIP_REMOVED_EVENT,
-      payload: { orgId: ORG, actorType: ActorType.USER, actorId: USER }
-    });
+    const singleEvents = expectBatch(emitted, undefined);
+    expect(singleEvents).toHaveLength(1);
+    expect(singleEvents[0].type).toBe(ORG_MEMBERSHIP_REMOVED_EVENT);
+    expect(singleEvents[0].data).toEqual({ orgId: ORG, actorType: ActorType.USER, actorId: USER });
   });
 });

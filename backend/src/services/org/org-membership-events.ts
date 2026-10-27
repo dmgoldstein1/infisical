@@ -79,7 +79,12 @@ export const toOrgMembershipActors = ({
 
 const emitAll = async (eventEmitter: TEventEmitter, events: TEventInput[], tx?: Knex) => {
   for await (const event of events) {
-    await eventEmitter.emit(event, tx);
+    // TEventEmitter.emit takes an array batch; a bare event object has no
+    // flatMap and 500s every membership-removal path (group/user/identity
+    // removal, SCIM delete, org-reconcile). Upstream 37b78f6 shipped the
+    // singular call; this restores the batch contract used by every other
+    // emit site (approval-policy, certificate-alerts, event-definition).
+    await eventEmitter.emit([event], tx);
   }
 };
 
@@ -98,7 +103,8 @@ export const emitGroupMembershipRemoved = async (
   tx?: Knex
 ) => {
   if (!actors.length) return;
-  await emitAll(
+  try {
+    await emitAll(
     eventEmitter,
     pageGroupScope(orgIds, actors).map((scope) => ({
       eventType: GROUP_MEMBERSHIP_REMOVED_EVENT,
@@ -106,6 +112,10 @@ export const emitGroupMembershipRemoved = async (
     })),
     tx
   );
+  } catch (e) {
+    console.error("DIAG_TRACE emitAll THREW", e);
+    throw e;
+  }
 };
 
 export const emitGroupLinkRemoved = (

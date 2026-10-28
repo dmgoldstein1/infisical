@@ -240,7 +240,7 @@
     "cassandra-driver": "^4.10.0",
     "connect-redis": "^7.1.1",
     "cron-parser": "^5.5.0",
-    "dd-trace": "^5.128.0",
+    "dd-trace": "5.131.1",
     "dns-packet": "^5.6.1",
     "dotenv": "^16.4.1",
     "fast-xml-parser": "^5.7.0",

@@ -12,6 +12,7 @@ import (
 	credentials "cloud.google.com/go/iam/credentials/apiv1"
 	"cloud.google.com/go/iam/credentials/apiv1/credentialspb"
 	"github.com/Infisical/infisical-merge/packages/api"
+	"github.com/Infisical/infisical-merge/packages/util"
 	"github.com/go-resty/resty/v2"
 	"google.golang.org/api/option"
 )
@@ -60,7 +61,13 @@ func LoginGatewayWithGcp(ctx context.Context, httpClient *resty.Client, gatewayI
 }
 
 func fetchGcpIdentityToken(ctx context.Context, audience string) (string, error) {
-	res, err := resty.New().
+	// Route through the shared constructor so metadata reads get the standard
+	// retry policy (TestNoDirectRestyConstruction enforces this).
+	httpClient, err := util.GetRestyClientWithPolicy(util.DefaultRetryPolicy())
+	if err != nil {
+		return "", fmt.Errorf("unable to build HTTP client for the GCP metadata server: %w", err)
+	}
+	res, err := httpClient.
 		SetTimeout(gcpMetadataTimeout).
 		R().
 		SetContext(ctx).
@@ -148,7 +155,11 @@ func resolveGcpServiceAccountEmail(ctx context.Context, serviceAccountKeyPath st
 		return key.ClientEmail, nil
 	}
 
-	res, err := resty.New().
+	httpClient, err := util.GetRestyClientWithPolicy(util.DefaultRetryPolicy())
+	if err != nil {
+		return "", fmt.Errorf("unable to build HTTP client for the GCP metadata server: %w", err)
+	}
+	res, err := httpClient.
 		SetTimeout(gcpMetadataTimeout).
 		R().
 		SetContext(ctx).

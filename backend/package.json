@@ -118,7 +118,13 @@
     },
     "google-auth-library": {
       "uuid": "^11.1.1"
-    }
+    },
+    "@opentelemetry/instrumentation-knex": "0.65.0",
+    "@opentelemetry/instrumentation-mongoose": "0.67.0",
+    "@opentelemetry/instrumentation-mysql": "0.67.0",
+    "@opentelemetry/instrumentation-mysql2": "0.67.0",
+    "@opentelemetry/instrumentation-pg": "0.73.0",
+    "@opentelemetry/instrumentation-tedious": "0.40.0"
   },
   "devDependencies": {
     "@react-email/preview-server": "^5.0.6",

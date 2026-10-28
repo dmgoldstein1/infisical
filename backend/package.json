@@ -67,7 +67,7 @@
     "cipher-base": "1.0.5",
     "sha.js": "2.4.12",
     "jws": "^4.0.1",
-    "qs": "$qs",
+    "qs": "^6.16.1",
     "glob": {
       ".": "^10.5.0",
       "minimatch": {
@@ -83,7 +83,7 @@
     },
     "nan": "^2.29.0",
     "hono": "^4.13.13",
-    "@hono/node-server": "^1.19.13",
+    "@hono/node-server": "^1.19.15",
     "vite": "^7.3.5",
     "@xmldom/xmldom": "^0.8.13",
     "lodash": "^4.18.0",
@@ -105,20 +105,25 @@
     "fast-xml-builder": "^1.1.7",
     "form-data": "^4.0.6",
     "find-my-way": "^9.7.0",
-    "body-parser": "^1.20.6",
+    "body-parser": "^1.20.9",
     "shell-quote": "^1.9.0",
     "websocket-driver": "^0.7.5",
     "botframework-streaming": {
       "ws": "7.5.13"
     },
-    "toml": "^5.0.1",
-    "esbuild": "^0.28.1",
     "botbuilder": {
       "uuid": "^11.1.1"
     },
     "google-auth-library": {
       "uuid": "^11.1.1"
-    }
+    },
+    "toml": "^5.0.1",
+    "esbuild": "^0.28.1",
+    "follow-redirects": "=1.16.1",
+    "@fastify/busboy": "=3.2.3",
+    "engine.io": "^6.6.10",
+    "source-map-js": "^1.2.2",
+    "nanoid": "^3.3.18"
   },
   "devDependencies": {
     "@react-email/preview-server": "^5.0.6",
@@ -244,7 +249,7 @@
     "cassandra-driver": "^4.10.0",
     "connect-redis": "^7.1.1",
     "cron-parser": "^5.5.0",
-    "dd-trace": "^5.128.0",
+    "dd-trace": "^5.131.1",
     "dns-packet": "^5.6.1",
     "dotenv": "^16.4.1",
     "fast-xml-parser": "^5.7.0",
@@ -272,8 +277,8 @@
     "mysql2": "^3.24.5",
     "nanoid": "^3.3.18",
     "netmask": "^2.0.2",
-    "node-forge": "^1.4.0",
-    "nodemailer": "^10.0.16",
+    "node-forge": "^1.4.1",
+    "nodemailer": "=10.1.4",
     "oauth4webapi": "3.8.8",
     "oci-common": "^2.142.2",
     "oci-identity": "^2.142.2",
@@ -299,7 +304,7 @@
     "pkijs": "^3.2.4",
     "posthog-node": "^5.28.1",
     "probot": "^13.3.8",
-    "qs": "^6.15.2",
+    "qs": "^6.16.1",
     "randexp": "^0.5.3",
     "re2": "^1.26.1",
     "react": "19.1.4",

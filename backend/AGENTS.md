@@ -14,8 +14,8 @@ All commands run from the `backend/` directory:
 
 - `npm run dev` — start dev server with tsx watch + pino-pretty logging (`dev:docker` is the same with the debugger on 9229)
 - `npm run build` — production build via tsdown (`tsdown.config.ts`) with sourcemaps
-- `npm run lint:fix` — ESLint autofix
-- `npm run type:check` — TypeScript check (uses 8GB heap)
+- `npm run lint:fix` — Oxlint autofix, then Oxfmt formatting (`npm run lint` checks both without writing, as CI does)
+- `npm run type:check` — TypeScript 7 (native compiler) check
 - `make reviewable-api` (from repo root) — runs `lint:fix` + `type:check` (run before PRs)
 
 The backend runs on Node 26. TypeScript files run directly through tsx (dev server, scripts, the
@@ -201,16 +201,27 @@ Notes:
 
 Path alias: `@app/*` maps to `./src/*`.
 
-## ESLint & Import Ordering
+## Linting, Formatting & Import Ordering
 
-Config in `.eslintrc.js`. Uses `simple-import-sort` with this group order:
+Oxlint (`.oxlintrc.json`) lints; its type-aware rules run through `oxlint-tsgolint` on TypeScript 7.
+Existing `eslint-disable` comments, including `@typescript-eslint/` rule names, are honoured by Oxlint.
+`import/no-cycle` is off: the backend has thousands of cycles through `@app/*` that ESLint's resolver never saw.
+Type-aware linting is the `--type-aware` CLI flag, not `options.typeAware`: Oxlint rejects that option in a nested
+config, which is what `backend/.oxlintrc.json` is to an editor opened at the repo root.
+Editor setup for the Oxc extension lives in `backend/.vscode/` and `backend/.zed/`.
+
+Oxfmt (`.oxfmtrc.json`) formats `src/**/*.ts` and sorts imports in this group order:
 1. Side-effect imports
 2. `node:` builtins
 3. Third-party packages
 4. `@app/` imports
-5. `@lib/` imports
-6. `@server/` imports
-7. Relative imports
+5. Other absolute imports (`e2e-test/`)
+6. Relative imports
+
+Since TypeScript 5.7, `Buffer` is typed as possibly `SharedArrayBuffer`-backed, which WebCrypto, `@peculiar/x509`,
+asn1 and pkijs reject. Declare `Buffer<ArrayBuffer>` (not the deprecated `NonSharedBuffer` alias) where a function really
+returns one (for example `Buffer.concat`, `Buffer.from`, cipher output), and use `asNonSharedBuffer` from `@app/lib/fn` at a call
+site that receives a plain `Buffer`.
 
 ## Architecture
 
@@ -774,7 +785,9 @@ Invariants worth knowing before extending it:
 an event is exactly as durable as the business write. Enqueueing to Redis after commit loses the event
 whenever the pod dies or Redis is down in that window. It's not alert-specific:
 `alert-event-consumer.ts` is one consumer on the shared registry, and anything else that needs
-at-least-once delivery of a domain event registers next to it.
+at-least-once delivery of a domain event registers next to it. The delegated approval dispatch consumer
+(`delegated-approval/dispatch/delegated-approval-dispatch-consumer.ts`) is the second: it calls the external
+approval system inline from `handle()` and maps the outcome to `Delivered` / `Retry` / `Failed`, with no queue hop.
 
 **Naming:** the outbox is an implementation detail to both sides of it. Emitters depend on
 `TEventEmitter` and pass a `TEventInput`; consumers implement `IEventConsumer`, receive `TEvent[]` (the
@@ -845,6 +858,10 @@ they move to it.
   no per-event state for a consumer: what a retry should skip is recorded wherever the consumer already
   keeps delivery records, keyed by `TEvent.id` (stable across attempts). The alert consumer files each
   run under that id in `alert_history.eventId` and the engine skips channels already recorded there.
+  The one piece of retry state a consumer sees is `TEvent.isFinalAttempt`: the row is `failed` after that
+  attempt whatever the consumer returns, so a consumer with state of its own records the terminal outcome
+  then (the delegated approval dispatch closes its request). A give-up from the stale-claim sweep never
+  reaches a consumer.
   Backoff is exponential with jitter from 30s, and `MAX_OUTBOX_ATTEMPTS` puts the last attempt about an
   hour after the first, because a `failed` row is a notification nobody will receive. To replay failed
   rows by hand: `status = 'retry', attempts = 0, nextRetryAt = now()`.
@@ -866,7 +883,11 @@ they move to it.
 - **Discovery only looks at consumers registered in this process.** A row for any other name has nowhere
   to go here. It waits and shows up on the oldest-pending gauge instead.
 - **Don't let one event's failure escape `handle`.** The outbox retries the whole batch when `handle`
-  throws. Catch per event and report `Retry` for that event alone (see `alert-event-consumer.ts`).
+  throws. Catch per event and report `Retry` for that event alone: `runEventsSerially` and
+  `parseEventPayload` in `event-outbox-fns.ts` are that loop and the payload check, and every consumer
+  uses them rather than its own copy. A consumer that calls a third party per event uses
+  `runEventsConcurrentlyByKey` instead, so one slow tenant cannot hold up the batch while events for one
+  resource still run one at a time (both delegated approval consumers key it on the delegated request).
 - **BullMQ owns latency, not correctness.** `attempts: 1` on the flush job is intentional; retry lives
   on the row. A lost job costs one relay interval.
 - **The relay is a `setInterval`, not a cron job.** It doesn't need exactly-once (`FOR UPDATE SKIP
@@ -1374,7 +1395,7 @@ OpenTelemetry metric setup lives in `src/lib/telemetry/`. Instruments are define
 
 **Recording is fire-and-forget.** Every `.add()` / `.record()` and every `record*Metric` helper is wrapped in `safely()` in `metrics.ts`, so a broken exporter, a bad instrument name, or a config read before `initEnvConfig()` can never throw into the code being measured. A measurement is an observation of the work, never a step in it — so call sites do not need their own try/catch, and must not treat a metric as something that can fail. The swallow is silent because the logger is itself initialised from config.
 
-**A new instrument goes on `InfisicalCore` and carries only bounded attributes.** The per-actor labels on the legacy meters are a deliberate exception, not a precedent: they are allowed only through `highCardinalityMeter`, so that `OTEL_DROP_HIGH_CARDINALITY_METERS` can switch them off. Do not put unbounded attributes on any other meter, and do not acquire a meter outside `src/lib/telemetry/` — ESLint blocks both `@opentelemetry/*` imports and `getMeter` access there, so use `highCardinalityMeter` for per-actor instruments and `resolveCoreMeter` for `InfisicalCore` observable gauges.
+**A new instrument goes on `InfisicalCore` and carries only bounded attributes.** The per-actor labels on the legacy meters are a deliberate exception, not a precedent: they are allowed only through `highCardinalityMeter`, so that `OTEL_DROP_HIGH_CARDINALITY_METERS` can switch them off. Do not put unbounded attributes on any other meter, and do not acquire a meter outside `src/lib/telemetry/` — Oxlint blocks both `@opentelemetry/*` imports and `getMeter` access there, so use `highCardinalityMeter` for per-actor instruments and `resolveCoreMeter` for `InfisicalCore` observable gauges.
 
 The gate has to sit at the call site because **a `DROP` aggregation does not bound memory; only an attributes processor does.** The SDK filters attributes *before* hashing them (so the allowlist View is bounded) but consults the aggregator *after* (so a dropped data point has already been keyed by its full attribute set). Under cumulative temporality — which `OTEL_EXPORT_TYPE=prometheus` mandates — `TemporalMetricProcessor` then retains one entry per distinct attribute set, with no cardinality cap, for the lifetime of the process. A meter whose data points are dropped therefore still leaks heap if anything records to it, which is why the flag stops the recording (`shouldRecordHighCardinalityMetrics` in `metrics.ts`) *and* the View strips attributes. With the flag off — the self-hosted default — that retention is the operator's informed choice; the tradeoff is documented in the monitoring guide.
 
@@ -1452,7 +1473,7 @@ Consequences worth knowing:
 - **A migration must never call `*WithRootEncryptionKey` or `buildSecretBlindIndexFromName`.** Migrations run
   before `kmsService.startService`, so they cannot reach the snapshot and fall back to `process.env`, which on
   a rotated instance is the wrong key: decrypts fail the auth tag, encrypts silently write unreadable rows.
-  ESLint blocks this under `src/db/migrations/`; the pre-existing call sites carry a file-level disable
+  Oxlint blocks this under `src/db/migrations/`; the pre-existing call sites carry a file-level disable
   explaining why they are safe.
 - **Exactly one retained key survives a promotion, enforced at promotion, not by the GC.** A second
   rotation before the first was completed would otherwise leave an older wrapper of the root key that

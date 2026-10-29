@@ -1,6 +1,7 @@
 name: "Run backend BDD tests"
 
 on: workflow_dispatch
+
 jobs:
   run-backend-bdd-tests:
     name: Run BDD tests

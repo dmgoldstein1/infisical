@@ -152,3 +152,12 @@ reports/run-20261028T181533Z/trees/patched-infisical/tests/clients/api/api.gen.g
 reports/run-20261028T181533Z/trees/patched-infisical/tests/harness/infisical/infisical.go:generic-api-key:36
 reports/run-20261028T181533Z/trees/patched-infisical/tests/harness/infisical/infisical.go:generic-api-key:37
 reports/run-20261028T181533Z/trees/patched-infisical/tests/suites/sso/scim/tokens_test.go:jwt:342
+# re-sync triage: upstream BDD workflow dummy NEW_ENCRYPTION_KEY (test-only);
+# upstream secret-v2-bridge fn-name false positives (saveTagsToSecretV2);
+# upstream docs.json publishable public keys (PostHog phc_, docs pk_).
+reports/run-20261028T181533Z/trees/patched-infisical/.github/workflows/run-backend-bdd-tests.yml:generic-api-key:69
+reports/run-20261028T181533Z/trees/patched-infisical/backend/src/services/secret-v2-bridge/secret-v2-bridge-types.ts:generic-api-key:213
+reports/run-20261028T181533Z/trees/patched-infisical/backend/src/services/secret-v2-bridge/secret-v2-bridge-types.ts:generic-api-key:251
+reports/run-20261028T181533Z/trees/patched-infisical/backend/src/services/secret-v2-bridge/secret-v2-bridge-types.ts:generic-api-key:316
+reports/run-20261028T181533Z/trees/patched-infisical/docs/docs.json:generic-api-key:4976
+reports/run-20261028T181533Z/trees/patched-infisical/docs/docs.json:generic-api-key:4980

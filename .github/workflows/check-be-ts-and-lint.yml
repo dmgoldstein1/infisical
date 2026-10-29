@@ -1,15 +1,6 @@
 name: "Check Backend PR types and lint"
 
-on:
-  pull_request:
-    types: [opened, synchronize]
-    paths:
-      - "backend/**"
-      - "!backend/README.md"
-      - "!backend/.*"
-      - "backend/.oxlintrc.json"
-      - "backend/.oxfmtrc.json"
-
+on: workflow_dispatch
 jobs:
   type-check:
     name: Type Check

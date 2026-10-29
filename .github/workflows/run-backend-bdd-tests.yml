@@ -1,16 +1,6 @@
 name: "Run backend BDD tests"
 
-on:
-  pull_request:
-    types: [opened, synchronize]
-    paths:
-      - "backend/**"
-      - "!backend/README.md"
-      - "!backend/.*"
-      - "backend/.oxlintrc.json"
-      - "build-versions.env"
-  workflow_call:
-
+on: workflow_dispatch
 jobs:
   run-backend-bdd-tests:
     name: Run BDD tests

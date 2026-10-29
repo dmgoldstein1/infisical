@@ -1,6 +1,16 @@
 name: "Run backend tests"
 
-on: workflow_dispatch
+on:
+  pull_request:
+    types: [opened, synchronize]
+    paths:
+      - "backend/**"
+      - "!backend/README.md"
+      - "!backend/.*"
+      - "backend/.oxlintrc.json"
+      - "build-versions.env"
+  workflow_call:
+
 concurrency:
   group: run-backend-tests-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}

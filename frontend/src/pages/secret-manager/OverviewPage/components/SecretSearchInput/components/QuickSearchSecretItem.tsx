@@ -1,8 +1,9 @@
-import { useNavigate } from "@tanstack/react-router";
+import type { MouseEvent } from "react";
 import { ChevronRightIcon, KeyIcon, SearchIcon } from "lucide-react";
 
 import {
   Badge,
+  RowLink,
   TableCell,
   TableRow,
   Tooltip,
@@ -10,8 +11,8 @@ import {
   TooltipTrigger
 } from "@app/components/v3";
 import { SecretV3RawSanitized } from "@app/hooks/api/secrets/types";
-import type { SecretOverviewPageSearch } from "@app/pages/secret-manager/OverviewPage/overviewSearch";
 
+import { isPlainClick, QUICK_SEARCH_ROUTE } from "./quickSearchLink";
 import { QuickSearchMetadata, QuickSearchMetadataList } from "./QuickSearchMetadataList";
 import { QuickSearchSecretCopyButton } from "./QuickSearchSecretCopyButton";
 import { QuickSearchSecretDetails } from "./QuickSearchSecretDetails";
@@ -36,22 +37,9 @@ export const QuickSearchSecretItem = ({
   tags,
   search
 }: Props) => {
-  const navigate = useNavigate({
-    from: "/organizations/$orgId/projects/secret-management/$projectId/overview"
-  });
-
-  const handleNavigate = () => {
+  const handleClick = (event: MouseEvent<HTMLAnchorElement>) => {
+    if (!isPlainClick(event)) return;
     onSelectResult({ search: secret.key, tags });
-    navigate({
-      search: (prev: SecretOverviewPageSearch) => ({
-        ...prev,
-        secretPath: secret.path,
-        search: undefined,
-        tags: undefined,
-        filterBy: "secret",
-        environments: [envSlug]
-      })
-    });
     onClose(false);
   };
 
@@ -69,12 +57,26 @@ export const QuickSearchSecretItem = ({
     );
 
   return (
-    <TableRow className="group cursor-pointer" onClick={handleNavigate}>
+    <TableRow linked>
       <TableCell>
         <KeyIcon className="text-secret" />
       </TableCell>
       <TableCell isTruncatable>
-        <span className="truncate font-medium">{secret.key}</span>
+        <RowLink
+          from={QUICK_SEARCH_ROUTE}
+          to="."
+          search={(prev) => ({
+            ...prev,
+            secretPath: secret.path,
+            search: secret.key,
+            tags: undefined,
+            filterBy: "secret",
+            environments: [envSlug]
+          })}
+          onClick={handleClick}
+        >
+          <span className="font-medium">{secret.key}</span>
+        </RowLink>
       </TableCell>
       <TableCell isTruncatable>
         <Tooltip delayDuration={1000}>

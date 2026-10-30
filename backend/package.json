@@ -131,7 +131,13 @@
     "@opentelemetry/instrumentation-mysql": "0.67.0",
     "@opentelemetry/instrumentation-mysql2": "0.67.0",
     "@opentelemetry/instrumentation-pg": "0.73.0",
-    "@opentelemetry/instrumentation-tedious": "0.40.0"
+    "@opentelemetry/instrumentation-tedious": "0.40.0",
+    "jsforce": {
+      "csv-parse": "^7.0.2"
+    },
+    "@azure/identity": {
+      "@azure/msal-node": "^7.1.0"
+    }
   },
   "devDependencies": {
     "@react-email/preview-server": "^5.0.6",
@@ -234,7 +240,7 @@
     "@peculiar/x509": "^1.12.1",
     "@platformatic/kafka": "^2.12.1",
     "@react-email/components": "^1.0.1",
-    "@simplewebauthn/server": "^13.3.2",
+    "@simplewebauthn/server": "^13.3.3",
     "@sindresorhus/slugify": "1.1.0",
     "@slack/oauth": "^3.0.2",
     "@slack/web-api": "^7.8.0",
@@ -282,7 +288,7 @@
     "nanoid": "^3.3.18",
     "netmask": "^2.0.2",
     "node-forge": "^1.4.1",
-    "nodemailer": "=10.1.4",
+    "nodemailer": "^10.1.7",
     "oauth4webapi": "3.8.8",
     "oci-common": "^2.142.2",
     "oci-identity": "^2.142.2",

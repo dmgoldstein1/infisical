@@ -606,7 +606,8 @@ const toCheckRunAnnotations = (findings: TFindingsPayload) =>
     message: `${description.replace(/\.+$/, "")}. Found in commit ${commit.slice(0, 7)}.`
   }));
 
-const escapeMarkdownTableCell = (value: string) => value.replace(/\|/g, "\\|").replace(/\r?\n/g, " ");
+const escapeMarkdownTableCell = (value: string) =>
+  value.replace(/\\/g, "\\\\").replace(/\|/g, "\\|").replace(/\r?\n/g, " ");
 
 // GitHub splits table cells on "|" even inside a link, so it is encoded along with the characters that end a link.
 const toMarkdownUrl = (url: string) =>

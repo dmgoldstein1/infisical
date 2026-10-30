@@ -44,7 +44,9 @@
     },
     "i18next": {
       "typescript": "$typescript"
-    }
+    },
+    "brace-expansion": "^5.0.12",
+    "esbuild": "^0.28.1"
   },
   "dependencies": {
     "@base-ui/react": "^1.7.0",

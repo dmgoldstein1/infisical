@@ -1,6 +1,7 @@
 name: Check Frontend Type and Lint check
 
 on: workflow_dispatch
+
 jobs:
   type-check:
     name: Type Check

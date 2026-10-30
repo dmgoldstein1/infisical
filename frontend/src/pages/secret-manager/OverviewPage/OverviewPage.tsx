@@ -265,24 +265,6 @@ import {
   useBatchStoreApi
 } from "../SecretDashboardPage/SecretMainPage.store";
 import {
-  AddResourceButtons,
-  AddResourceButtonsProps
-} from "./components/AddResourceButtons/AddResourceButtons";
-import { type CopySecretsInvocation, CopySecretsSheet } from "./components/CopySecretsSheet";
-import { CreateDynamicSecretForm } from "./components/CreateDynamicSecretForm";
-import { CreateSecretForm } from "./components/CreateSecretForm";
-import { EditDynamicSecretForm } from "./components/EditDynamicSecretForm";
-import { SecretsActivationNudge } from "./components/InviteMembersNudge/SecretsActivationNudge";
-import { ImportSecretsSheet } from "./components/SecretDropzone";
-import { SecretV2MigrationSection } from "./components/SecretV2MigrationSection";
-import { MoveSecretsModal } from "./components/SelectionPanel/components";
-import { SelectionPanel } from "./components/SelectionPanel/SelectionPanel";
-import {
-  getTableRowActivityId,
-  type TableRowActivityChangeHandler,
-  type TableRowActivityId
-} from "./components/tableRowActivity";
-import {
   DownloadEnvButton,
   DynamicSecretTableRow,
   EmptyResourceDisplay,
@@ -305,6 +287,24 @@ import {
   TableFilteredEmptyRow
 } from "./components";
 import type { SecretOverviewPageSearch } from "./overviewSearch";
+import {
+  AddResourceButtons,
+  AddResourceButtonsProps
+} from "./components/AddResourceButtons/AddResourceButtons";
+import { type CopySecretsInvocation, CopySecretsSheet } from "./components/CopySecretsSheet";
+import { CreateDynamicSecretForm } from "./components/CreateDynamicSecretForm";
+import { CreateSecretForm } from "./components/CreateSecretForm";
+import { EditDynamicSecretForm } from "./components/EditDynamicSecretForm";
+import { SecretsActivationNudge } from "./components/InviteMembersNudge/SecretsActivationNudge";
+import { ImportSecretsSheet } from "./components/SecretDropzone";
+import { SecretV2MigrationSection } from "./components/SecretV2MigrationSection";
+import { MoveSecretsModal } from "./components/SelectionPanel/components";
+import { SelectionPanel } from "./components/SelectionPanel/SelectionPanel";
+import {
+  getTableRowActivityId,
+  type TableRowActivityChangeHandler,
+  type TableRowActivityId
+} from "./components/tableRowActivity";
 import {
   createOverviewTelemetry,
   observeOverviewRequest,
@@ -718,8 +718,8 @@ const OverviewPageContent = () => {
 
   const shouldClearSortEnvironment = Boolean(
     sortEnvironment &&
-      (visibleEnvs.length === 1 ||
-        !visibleEnvs.some((environment) => environment.slug === sortEnvironment))
+    (visibleEnvs.length === 1 ||
+      !visibleEnvs.some((environment) => environment.slug === sortEnvironment))
   );
   const isTimestampSort =
     orderBy === DashboardSecretsOrderBy.CreatedAt || orderBy === DashboardSecretsOrderBy.UpdatedAt;

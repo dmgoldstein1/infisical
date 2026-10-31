@@ -110,6 +110,25 @@ describe("getPullRequestScanCheckRunResult", () => {
     expect(result.summary).not.toContain(SECRET_VALUE);
   });
 
+  test("escapes backslashes before pipes so a value cannot break out of its table cell", () => {
+    const finding = makeFinding(0);
+    const result = getPullRequestScanCheckRunResult({
+      findings: [
+        {
+          ...finding,
+          details: { ...(finding.details as object), file: "dir\\na|me.ts", link: "" }
+        }
+      ],
+      scannedCommitCount: 1,
+      totalCommitCount: 1
+    });
+
+    // Backslash is doubled first, then the pipe is escaped: a literal `\|` in the
+    // input must not become an (escaped) cell delimiter or a lone escape.
+    expect(result.summary).toContain("dir\\\\na\\|me.ts:1");
+    expect(result.summary).not.toContain("dir\\na|me.ts:1");
+  });
+
   test("passes when every finding was marked as a false positive or ignored", () => {
     const result = getPullRequestScanCheckRunResult({
       findings: [

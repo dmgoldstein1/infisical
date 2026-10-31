@@ -25,7 +25,7 @@
     "proxy-addr": "^2.0.8",
     "body-parser": "^1.20.9",
     "nanoid": "^5.1.16",
-    "follow-redirects": "^1.16.1"
+    "follow-redirects": "^1.16.2"
   },
   "dependencies": {
     "axios": "^1.20.0",

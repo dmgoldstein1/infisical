@@ -113,7 +113,7 @@
     },
     "toml": "^5.0.1",
     "esbuild": "^0.28.1",
-    "follow-redirects": "=1.16.1",
+    "follow-redirects": "=1.16.2",
     "@fastify/busboy": "=3.2.3",
     "libsodium-wrappers": "=0.7.13",
     "libsodium": "=0.7.13",

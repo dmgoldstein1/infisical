@@ -19,7 +19,6 @@
     "build-storybook": "storybook build"
   },
   "overrides": {
-    "zod": "^4.6.6",
     "sha.js": "2.4.12",
     "flatted": "^3.4.2",
     "rollup": "^4.59.0",
@@ -151,7 +150,7 @@
     "tailwind-merge": "^2.5.5",
     "xterm-readline": "^1.1.2",
     "yaml": "^2.8.3",
-    "zod": "^4.6.6",
+    "zod": "^3.24.1",
     "zustand": "^5.0.2"
   },
   "devDependencies": {

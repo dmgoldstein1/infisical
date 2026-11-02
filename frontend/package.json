@@ -19,6 +19,7 @@
     "build-storybook": "storybook build"
   },
   "overrides": {
+    "zod": "^4.6.6",
     "sha.js": "2.4.12",
     "flatted": "^3.4.2",
     "rollup": "^4.59.0",
@@ -28,7 +29,7 @@
     "storybook": "~10.6.3",
     "tar": ">=7.5.21",
     "browserslist": "^4.28.7",
-    "follow-redirects": "^1.16.1",
+    "follow-redirects": "^1.16.2",
     "protobufjs": "^7.6.5",
     "pbkdf2": "^3.1.7",
     "fflate": "^0.8.3",
@@ -150,7 +151,7 @@
     "tailwind-merge": "^2.5.5",
     "xterm-readline": "^1.1.2",
     "yaml": "^2.8.3",
-    "zod": "^3.24.1",
+    "zod": "^4.6.6",
     "zustand": "^5.0.2"
   },
   "devDependencies": {

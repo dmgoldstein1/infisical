@@ -1,4 +1,5 @@
 import { expect, request, test, type Page, type Response } from "@playwright/test";
+import { randomUUID } from "node:crypto";
 
 import { GAMMA_BASE_URL } from "../helpers/constants";
 import { primeSamlIdentity, startSamlLogin } from "../helpers/idp-client";
@@ -13,7 +14,7 @@ const TEST_FIRST_NAME = "E2E";
 const TEST_LAST_NAME = "DeactivationTest";
 
 const makeExternalId = (): string => {
-  const runId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const runId = `${Date.now()}-${randomUUID().split("-")[0]}`;
   return `e2e-deact-${runId}@infisical-e2e.test`;
 };
 

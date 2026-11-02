@@ -169,9 +169,8 @@ func (p *KubernetesProxy) HandleConnection(ctx context.Context, clientConn net.C
 			EventType: session.HttpEventRequest,
 			URL:       req.URL.String(),
 			Method:    req.Method,
-			// TODO: filter out sensitive headers?
-			Headers: req.Header,
-			Body:    reqBody,
+			Headers:   session.RedactedHeaders(req.Header),
+			Body:      reqBody,
 		})
 		if err != nil {
 			l.Error().Err(err).Msg("Failed to log HTTP request event")

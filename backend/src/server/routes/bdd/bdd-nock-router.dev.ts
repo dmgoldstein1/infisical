@@ -22,6 +22,8 @@ export const registerBddNockRouter = async (server: FastifyZodProvider) => {
     return nock;
   };
 
+  const escapeRegExp = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
   const checkIfBddNockApiEnabled = () => {
     // Note: Please note that this API is only available in development mode and only for BDD tests.
     // This endpoint should NEVER BE ENABLED IN PRODUCTION!
@@ -52,7 +54,7 @@ export const registerBddNockRouter = async (server: FastifyZodProvider) => {
           path:
             path !== undefined && typeof path === "string"
               ? path
-              : new RegExp((path as unknown as { regex: string }).regex ?? "")
+              : new RegExp(escapeRegExp((path as unknown as { regex: string }).regex ?? ""))
         } as Definition;
       });
 

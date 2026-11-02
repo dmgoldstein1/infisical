@@ -119,15 +119,15 @@ export const MicrosoftTeamsIntegrationForm = ({ id, onClose, onBack }: Props) =>
         clientId: microsoftTeamsClientId.clientId
       };
 
-      const url = `https://login.microsoftonline.com/${tenantId}/oauth2/v2.0/authorize?
-      client_id=${microsoftTeamsClientId.clientId}
-      &redirect_uri=${state.redirectUri}
-      &response_type=code
-      &response_mode=query
-      &scope=https://graph.microsoft.com/.default
-      &state=${encodeURIComponent(JSON.stringify(state))}
-      &prompt=consent
-      &admin_consent=true`;
+      const url =
+        `https://login.microsoftonline.com/${encodeURIComponent(tenantId)}/oauth2/v2.0/authorize` +
+        `?client_id=${encodeURIComponent(microsoftTeamsClientId.clientId)}` +
+        `&redirect_uri=${encodeURIComponent(state.redirectUri)}` +
+        `&response_type=code` +
+        `&response_mode=query` +
+        `&scope=${encodeURIComponent("https://graph.microsoft.com/.default")}` +
+        `&state=${encodeURIComponent(JSON.stringify(state))}` +
+        `&prompt=consent&admin_consent=true`;
 
       window.location.href = url;
     }

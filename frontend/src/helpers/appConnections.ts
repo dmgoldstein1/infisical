@@ -968,20 +968,21 @@ export const CSRF_TOKEN_STORAGE_KEY = "latestCSRFToken";
 export const GITHUB_CONNECTION_FORM_STORAGE_KEY = "githubConnectionFormData";
 
 export const buildGitHubHostUrl = (host?: string | null) =>
-  host && host.trim().length > 0 ? `https://${host.trim()}` : "https://github.com";
+  host && host.trim().length > 0 ? `https://${encodeURIComponent(host.trim())}` : "https://github.com";
 
 export const buildGitHubAppUrl = (
   slug: string,
   host?: string | null,
   instanceType?: "cloud" | "server"
-) => `${buildGitHubHostUrl(host)}/${instanceType === "server" ? "github-apps" : "apps"}/${slug}`;
+) =>
+  `${buildGitHubHostUrl(host)}/${instanceType === "server" ? "github-apps" : "apps"}/${encodeURIComponent(slug)}`;
 
 export const buildGitHubAppInstallUrl = (
   slug: string,
   state: string,
   host?: string | null,
   instanceType?: "cloud" | "server"
-) => `${buildGitHubAppUrl(slug, host, instanceType)}/installations/new?state=${state}`;
+) => `${buildGitHubAppUrl(slug, host, instanceType)}/installations/new?state=${encodeURIComponent(state)}`;
 
 export const generateCsrfToken = () =>
   Array.from(crypto.getRandomValues(new Uint8Array(16)))

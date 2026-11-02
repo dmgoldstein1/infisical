@@ -259,13 +259,13 @@ var oracleUpstreamCiphers = []uint16{
 	tls.TLS_RSA_WITH_AES_256_CBC_SHA,
 }
 
-// TLS 1.0–1.2 only: Oracle TCPS has no TLS-1.3 restart mechanism; RDS negotiates down to 1.0.
+// TLS 1.2 only: Oracle TCPS has no TLS-1.3 restart mechanism. Every supported Oracle server speaks 1.2.
 func BuildTLSConfig(base *tls.Config, host string) *tls.Config {
 	cfg := base.Clone()
 	if cfg.ServerName == "" {
 		cfg.ServerName = host
 	}
-	cfg.MinVersion = tls.VersionTLS10
+	cfg.MinVersion = tls.VersionTLS12
 	cfg.MaxVersion = tls.VersionTLS12
 	cfg.CipherSuites = oracleUpstreamCiphers
 	return cfg
@@ -542,6 +542,9 @@ func rewriteAuthRequestUserWithFraming(payload []byte, expectedSubOp byte, newUs
 	newUserBytes := []byte(newUser)
 	newUserLen := len(newUserBytes)
 
+	if len(payload) > 1<<22 {
+		return nil, fmt.Errorf("auth request packet too large: %d", len(payload))
+	}
 	out := make([]byte, 0, len(payload)+16)
 	out = append(out, payload[:hasUserPos]...)
 	out = append(out, 0x01)
@@ -573,6 +576,9 @@ func rewriteConnectServiceName(pkt []byte, newName string) []byte {
 	oldVal := pkt[valStart:valEnd]
 	newVal := []byte(newName)
 	if bytes.Equal(oldVal, newVal) {
+		return pkt
+	}
+	if len(pkt) > 1<<22 || len(newVal) > 1<<22 {
 		return pkt
 	}
 

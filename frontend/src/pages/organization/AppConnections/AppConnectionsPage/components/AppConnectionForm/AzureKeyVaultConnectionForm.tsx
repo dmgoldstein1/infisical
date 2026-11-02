@@ -284,15 +284,33 @@ export const AzureKeyVaultConnectionForm = ({ appConnection, onSubmit, projectId
         localStorage.setItem(
           "azureKeyVaultConnectionFormData",
           JSON.stringify({
-            ...formData,
+            method: formData.method,
+            name: formData.name,
+            description: formData.description,
+            tenantId: formData.tenantId,
+            gatewayId: formData.gatewayId ?? null,
+            gatewayPoolId: formData.gatewayPoolId ?? null,
             connectionId: appConnection?.id,
             projectId,
             returnUrl
           } as AzureKeyVaultFormData)
         );
-        window.location.assign(
-          `https://login.microsoftonline.com/${formData.tenantId || "common"}/oauth2/v2.0/authorize?client_id=${oauthClientId}&response_type=code&redirect_uri=${window.location.origin}/organization/app-connections/azure/oauth/callback&response_mode=query&scope=https://vault.azure.net/.default%20openid%20offline_access&state=${state}<:>azure-key-vault`
+        const oauthUrl = new URL(
+          `https://login.microsoftonline.com/${encodeURIComponent(formData.tenantId || "common")}/oauth2/v2.0/authorize`
         );
+        oauthUrl.searchParams.set("client_id", oauthClientId ?? "");
+        oauthUrl.searchParams.set("response_type", "code");
+        oauthUrl.searchParams.set(
+          "redirect_uri",
+          `${window.location.origin}/organization/app-connections/azure/oauth/callback`
+        );
+        oauthUrl.searchParams.set("response_mode", "query");
+        oauthUrl.searchParams.set(
+          "scope",
+          "https://vault.azure.net/.default openid offline_access"
+        );
+        oauthUrl.searchParams.set("state", `${state}<:>azure-key-vault`);
+        window.location.assign(oauthUrl.toString());
         break;
       case AzureKeyVaultConnectionMethod.ClientSecret:
         await onSubmit(formData);

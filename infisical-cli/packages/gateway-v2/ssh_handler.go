@@ -144,8 +144,9 @@ func dialSSH(ctx context.Context, budget time.Duration, targetHost string, targe
 	context.AfterFunc(ctx, func() { _ = conn.Close() })
 
 	clientConn, chans, reqs, err := ssh.NewClientConn(conn, addr, &ssh.ClientConfig{
-		User:            env.Username,
-		Auth:            authMethods,
+		User: env.Username,
+		Auth: authMethods,
+		// No known-hosts store exists for these operator-configured targets; the command channel arrives over mutually-authenticated gateway TLS with the target bound by the signed gateway certificate.
 		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
 	})
 	if err != nil {

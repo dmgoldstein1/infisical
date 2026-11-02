@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -98,11 +99,23 @@ func (h *ErrorHandler) writeHTTPError(ctx context.Context, w http.ResponseWriter
 	_ = json.NewEncoder(w).Encode(resp)
 }
 
+// validationFields returns the names of the fields that failed validation.
+// Messages are excluded: they can echo raw request values (including headers)
+// into the logs.
+func validationFields(validationErrors runtime.ValidationErrors) []string {
+	fields := make([]string, 0, len(validationErrors))
+	for _, ve := range validationErrors {
+		fields = append(fields, ve.Field)
+	}
+	return fields
+}
+
 // writeValidationError writes validation errors as a ValidationError response.
 func (h *ErrorHandler) writeValidationError(ctx context.Context, w http.ResponseWriter, reqID string, validationErrors runtime.ValidationErrors) {
 	h.Logger.WarnContext(ctx, "validation error",
 		slog.String("reqId", reqID),
-		slog.Any("errors", validationErrors),
+		slog.Int("count", len(validationErrors)),
+		slog.Any("fields", validationFields(validationErrors)),
 	)
 
 	fieldErrors := make([]FieldError, 0, len(validationErrors))
@@ -154,7 +167,7 @@ func (h *ErrorHandler) writeClientError(ctx context.Context, w http.ResponseWrit
 func (h *ErrorHandler) writeInternalError(ctx context.Context, w http.ResponseWriter, reqID string, err error) {
 	h.Logger.ErrorContext(ctx, "unhandled error",
 		slog.String("reqId", reqID),
-		slog.Any("error", err),
+		slog.String("errorType", fmt.Sprintf("%T", err)),
 	)
 
 	resp := Error{

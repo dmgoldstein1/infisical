@@ -92,7 +92,8 @@ func dialSSHOverTunnel(transport *BaseProxyServer, username string) (*ssh.Client
 
 func newSSHClient(conn net.Conn, username string) (*ssh.Client, error) {
 	sshConn, chans, reqs, err := ssh.NewClientConn(conn, sshTunnelAddr, &ssh.ClientConfig{
-		User:            username,
+		User: username,
+		// The relay beneath is already mutually-authenticated TLS to the gateway itself, so the endpoint identity does not rest on this check; no host-key distribution exists for ephemeral relay endpoints.
 		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
 		ClientVersion:   sshClientVersion,
 	})

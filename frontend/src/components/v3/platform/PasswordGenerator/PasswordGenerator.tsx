@@ -43,8 +43,17 @@ type RuleOption = {
   matchesCurrentScope: boolean;
 };
 
-const NONE_RULE_OPTION: RuleOption = {
-  label: "None (Custom Generation)",
+const getUnbiasedRandomInt = (bound: number): number => {
+  const sampleSpace = 2 ** 32;
+  const limit = sampleSpace - (sampleSpace % bound);
+  const sample = new Uint32Array(1);
+  do {
+    crypto.getRandomValues(sample);
+  } while (sample[0] >= limit);
+  return sample[0] % bound;
+};
+
+const NONE_RULE_OPTION: RuleOption = {  label: "None (Custom Generation)",
   value: "",
   matchesCurrentScope: false
 };
@@ -78,23 +87,19 @@ const generateFromConstraints = (constraints: TValueConstraints): string => {
   }
 
   if (middle === undefined) {
-    middle = "";
-
     const fixedLength = prefix.length + suffix.length;
     const targetMin = Math.max(minLength - fixedLength, 1);
     const targetMax = Math.max(maxLength - fixedLength, 1);
     const lengthRange = Math.max(targetMax - targetMin, 0);
     const randomLength =
-      lengthRange > 0
-        ? targetMin + (crypto.getRandomValues(new Uint32Array(1))[0] % (lengthRange + 1))
-        : Math.max(targetMin, 1);
+      lengthRange > 0 ? targetMin + getUnbiasedRandomInt(lengthRange + 1) : Math.max(targetMin, 1);
 
     const charset = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_.~!*";
-    const randomBytes = new Uint32Array(randomLength);
-    crypto.getRandomValues(randomBytes);
+    let middleTail = "";
     for (let i = 0; i < randomLength; i += 1) {
-      middle += charset[randomBytes[i] % charset.length];
+      middleTail += charset[getUnbiasedRandomInt(charset.length)];
     }
+    middle = middleTail;
   }
 
   return prefix + middle + suffix;
@@ -268,11 +273,9 @@ export const PasswordGenerator = ({
 
     if (availableChars === "") availableChars = charset.lowercase + charset.numbers;
 
-    const randomBytes = new Uint32Array(passwordOptions.length);
-    crypto.getRandomValues(randomBytes);
     let newPassword = "";
     for (let i = 0; i < passwordOptions.length; i += 1) {
-      newPassword += availableChars[randomBytes[i] % availableChars.length];
+      newPassword += availableChars[getUnbiasedRandomInt(availableChars.length)];
     }
 
     return newPassword;

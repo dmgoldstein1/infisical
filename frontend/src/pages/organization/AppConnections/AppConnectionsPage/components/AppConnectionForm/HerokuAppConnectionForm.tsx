@@ -129,7 +129,9 @@ export const HerokuConnectionForm = ({ appConnection, onSubmit: formSubmit, proj
           localStorage.setItem(
             "herokuConnectionFormData",
             JSON.stringify({
-              ...formData,
+              method: formData.method,
+              name: formData.name,
+              description: formData.description,
               connectionId: appConnection?.id,
               returnUrl,
               projectId

@@ -76,7 +76,19 @@ export const AzureKeyVaultConfigurePage = () => {
         return;
       }
 
-      if (!vaultBaseUrl.startsWith("https://") || !vaultBaseUrl.endsWith("vault.azure.net")) {
+      let vaultHostname = "";
+      try {
+        const vaultUrl = new URL(vaultBaseUrl);
+        if (vaultUrl.protocol !== "https:") throw new Error("invalid protocol");
+        vaultHostname = vaultUrl.hostname.toLowerCase();
+      } catch {
+        vaultHostname = "";
+      }
+
+      if (
+        vaultHostname !== "vault.azure.net" &&
+        !vaultHostname.endsWith(".vault.azure.net")
+      ) {
         setVaultBaseUrlErrorText("Vault URI must be like https://<vault_name>.vault.azure.net");
         return;
       }

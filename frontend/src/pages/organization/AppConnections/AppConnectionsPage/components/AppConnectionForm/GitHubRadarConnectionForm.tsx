@@ -92,7 +92,9 @@ export const GitHubRadarConnectionForm = ({ appConnection, projectId }: Props) =
     localStorage.setItem(
       "githubRadarConnectionFormData",
       JSON.stringify({
-        ...formData,
+        method: formData.method,
+        name: formData.name,
+        description: formData.description,
         connectionId: appConnection?.id,
         projectId,
         returnUrl
@@ -100,11 +102,14 @@ export const GitHubRadarConnectionForm = ({ appConnection, projectId }: Props) =
     );
 
     switch (formData.method) {
-      case GitHubRadarConnectionMethod.App:
-        window.location.assign(
-          `https://github.com/apps/${appClientSlug}/installations/new?state=${state}`
+      case GitHubRadarConnectionMethod.App: {
+        const installUrl = new URL(
+          `https://github.com/apps/${encodeURIComponent(appClientSlug ?? "")}/installations/new`
         );
+        installUrl.searchParams.set("state", state);
+        window.location.assign(installUrl.toString());
         break;
+      }
       default:
         throw new Error(
           `Unhandled GitHub Radar Connection method: ${(formData as FormData).method}`

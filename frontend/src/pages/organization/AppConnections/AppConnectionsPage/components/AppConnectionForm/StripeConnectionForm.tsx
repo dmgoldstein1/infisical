@@ -107,7 +107,9 @@ export const StripeConnectionForm = ({ appConnection, projectId }: Props) => {
     localStorage.setItem(
       "stripeConnectionFormData",
       JSON.stringify({
-        ...formData,
+        method: formData.method,
+        name: formData.name,
+        description: formData.description,
         connectionId: appConnection?.id,
         returnUrl,
         projectId

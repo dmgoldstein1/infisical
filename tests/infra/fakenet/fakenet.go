@@ -157,9 +157,10 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// One line per outbound call, always. Container logs are captured to a file
 	// anyway, and this is the first thing worth reading when a sync did not do what
-	// a test expected: it says whether the call happened at all, and under which
-	// credential.
-	log.Printf("%-6s %s%s -> %d  scope=%s", r.Method, host, r.URL.Path, rec.status, short(key))
+	// a test expected: it says whether the call happened at all.
+	// The credential itself is never logged; scope attribution lives in the
+	// per-scope call records asserted on failure.
+	log.Printf("%-6s %s%s -> %d", r.Method, host, r.URL.Path, rec.status)
 }
 
 func short(key string) string {

@@ -39,11 +39,16 @@ export function AzureKeyVaultAuthorizePage() {
   });
 
   const onFormSubmit = async ({ tenantId }: FormData) => {
-    const link = `https://login.microsoftonline.com/${
-      tenantId ?? "common"
-    }/oauth2/v2.0/authorize?client_id=${clientId}&response_type=code&redirect_uri=${
-      window.location.origin
-    }/integrations/azure-key-vault/oauth2/callback&response_mode=query&scope=https://vault.azure.net/.default openid offline_access&state=${state}`;
+    const tenantSegment = encodeURIComponent(tenantId?.trim() || "common");
+    const callbackUri = `${window.location.origin}/integrations/azure-key-vault/oauth2/callback`;
+    const link =
+      `https://login.microsoftonline.com/${tenantSegment}/oauth2/v2.0/authorize` +
+      `?client_id=${encodeURIComponent(clientId ?? "")}` +
+      `&response_type=code` +
+      `&redirect_uri=${encodeURIComponent(callbackUri)}` +
+      `&response_mode=query` +
+      `&scope=${encodeURIComponent("https://vault.azure.net/.default openid offline_access")}` +
+      `&state=${encodeURIComponent(state ?? "")}`;
 
     window.location.assign(link);
   };

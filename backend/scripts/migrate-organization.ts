@@ -9,9 +9,9 @@ const prompt = promptSync({
 });
 
 const sanitizeInputParam = (value: string) => {
-  // Escape double quotes and wrap the entire value in double quotes
+  // Escape backslashes first, then double quotes, and wrap the entire value in double quotes
   if (value) {
-    return `"${value.replace(/"/g, '\\"')}"`;
+    return `"${value.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
   }
   return '""';
 };

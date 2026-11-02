@@ -284,13 +284,24 @@ export const GitHubConnectionForm = ({ appConnection, projectId, onSubmit }: Pro
     gitHubAppId?: string | null,
     appSlug?: string
   ) => {
+    const oauthCredentials = formData.credentials as {
+      instanceType?: "cloud" | "server";
+      host?: string;
+    };
     localStorage.setItem(CSRF_TOKEN_STORAGE_KEY, installState);
     localStorage.setItem(
       GITHUB_CONNECTION_FORM_STORAGE_KEY,
       JSON.stringify({
-        ...formData,
+        method: formData.method,
+        name: formData.name,
+        description: formData.description,
+        gatewayId: formData.gatewayId ?? null,
+        gatewayPoolId: formData.gatewayPoolId ?? null,
         credentials: {
-          ...(formData.credentials as TGitHubConnection["credentials"]),
+          ...(oauthCredentials.instanceType
+            ? { instanceType: oauthCredentials.instanceType }
+            : {}),
+          ...(oauthCredentials.host ? { host: oauthCredentials.host } : {}),
           ...(gitHubAppId ? { gitHubAppId } : {})
         },
         ...(appSlug ? { appSlug } : {}),
@@ -378,9 +389,18 @@ export const GitHubConnectionForm = ({ appConnection, projectId, onSubmit }: Pro
       }
       case GitHubConnectionMethod.OAuth:
         storeConnectionFormData(formData, installState);
-        window.location.assign(
-          `${githubHost}/login/oauth/authorize?client_id=${oauthClientId}&response_type=code&scope=repo,admin:org&redirect_uri=${window.location.origin}/organization/app-connections/github/oauth/callback&state=${installState}`
-        );
+        {
+          const oauthUrl = new URL(`${githubHost}/login/oauth/authorize`);
+          oauthUrl.searchParams.set("client_id", oauthClientId ?? "");
+          oauthUrl.searchParams.set("response_type", "code");
+          oauthUrl.searchParams.set("scope", "repo,admin:org");
+          oauthUrl.searchParams.set(
+            "redirect_uri",
+            `${window.location.origin}/organization/app-connections/github/oauth/callback`
+          );
+          oauthUrl.searchParams.set("state", installState);
+          window.location.assign(oauthUrl.toString());
+        }
         break;
       default:
         throw new Error(`Unhandled GitHub Connection method: ${(formData as FormData).method}`);

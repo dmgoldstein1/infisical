@@ -152,7 +152,14 @@ export const GitLabConnectionForm = ({ appConnection, onSubmit: formSubmit, proj
           localStorage.setItem(
             "gitlabConnectionFormData",
             JSON.stringify({
-              ...formData,
+              method: formData.method,
+              name: formData.name,
+              description: formData.description,
+              credentials: {
+                ...(formData.credentials.instanceUrl
+                  ? { instanceUrl: formData.credentials.instanceUrl }
+                  : {})
+              },
               connectionId: appConnection?.id,
               isUpdate,
               projectId,

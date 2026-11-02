@@ -57,6 +57,15 @@ type SessionEvent struct {
 
 type HttpEventType string
 
+// RedactedHeaders keeps header names for audit debugging while stripping values, which may carry credentials.
+func RedactedHeaders(h http.Header) http.Header {
+	redacted := make(http.Header, len(h))
+	for name := range h {
+		redacted[name] = []string{"redacted"}
+	}
+	return redacted
+}
+
 type HttpEvent struct {
 	Timestamp time.Time `json:"timestamp"`
 	// TODO: ideally this should be different polymorphic structs determined by the event type,

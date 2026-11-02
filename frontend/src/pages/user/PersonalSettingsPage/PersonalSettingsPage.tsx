@@ -7,6 +7,18 @@ import { PageTitle } from "@app/components/PageTitle";
 
 import { PersonalTabGroup } from "./components/PersonalTabGroup";
 
+const isCloudHost = () => {
+  try {
+    const { hostname, protocol } = new URL(window.location.origin);
+    const host = hostname.toLowerCase();
+    return (
+      protocol === "https:" && (host === "app.infisical.com" || host === "gamma.infisical.com")
+    );
+  } catch {
+    return false;
+  }
+};
+
 export const PersonalSettingsPage = () => {
   const { t } = useTranslation();
   const navigate = useNavigate({ from: "/personal-settings/" });
@@ -32,8 +44,7 @@ export const PersonalSettingsPage = () => {
             Manage your profile, authentication, and active sessions.
           </p>
         </div>
-        {!window.location.origin.includes("https://app.infisical.com") &&
-          !window.location.origin.includes("https://gamma.infisical.com") && <WishForm />}
+        {!isCloudHost() && <WishForm />}
       </header>
       <PersonalTabGroup
         selectedTab={selectedTab}

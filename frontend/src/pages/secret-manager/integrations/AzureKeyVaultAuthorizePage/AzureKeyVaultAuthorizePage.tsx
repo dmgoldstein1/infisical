@@ -39,9 +39,9 @@ export function AzureKeyVaultAuthorizePage() {
   });
 
   const onFormSubmit = async ({ tenantId }: FormData) => {
-    const link = `https://login.microsoftonline.com/${
+    const link = `https://login.microsoftonline.com/${encodeURIComponent(
       tenantId ?? "common"
-    }/oauth2/v2.0/authorize?client_id=${clientId}&response_type=code&redirect_uri=${
+    )}/oauth2/v2.0/authorize?client_id=${clientId}&response_type=code&redirect_uri=${
       window.location.origin
     }/integrations/azure-key-vault/oauth2/callback&response_mode=query&scope=https://vault.azure.net/.default openid offline_access&state=${state}`;
 

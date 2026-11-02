@@ -119,7 +119,7 @@ export const MicrosoftTeamsIntegrationForm = ({ id, onClose, onBack }: Props) =>
         clientId: microsoftTeamsClientId.clientId
       };
 
-      const url = `https://login.microsoftonline.com/${tenantId}/oauth2/v2.0/authorize?
+      const url = `https://login.microsoftonline.com/${encodeURIComponent(tenantId)}/oauth2/v2.0/authorize?
       client_id=${microsoftTeamsClientId.clientId}
       &redirect_uri=${state.redirectUri}
       &response_type=code

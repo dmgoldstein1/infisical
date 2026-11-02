@@ -120,3 +120,16 @@ func TestTTCReaderRejectsAHostileLength(t *testing.T) {
 		t.Fatal("an over-long read must be rejected")
 	}
 }
+
+func TestRewriteGuardsRejectOversizedInputs(t *testing.T) {
+	huge := make([]byte, maxOracleRewriteBytes+1)
+	if _, err := rewriteAuthRequestUserWithFraming(huge, AuthSubOpPhaseOne, "U", true); err == nil {
+		t.Fatal("an oversized auth request must be rejected before allocating")
+	}
+	// Oversized service-name rewrites leave the packet untouched instead of
+	// allocating from attacker-sized hints.
+	pkt := []byte("SERVICE_NAME=X)")
+	if out := rewriteConnectServiceName(pkt, string(make([]byte, maxOracleRewriteBytes+1))); !bytes.Equal(out, pkt) {
+		t.Fatal("an oversized service name must leave the packet unchanged")
+	}
+}

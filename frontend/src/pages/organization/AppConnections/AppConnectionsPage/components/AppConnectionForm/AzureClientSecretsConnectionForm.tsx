@@ -25,7 +25,8 @@ import {
 import {
   APP_CONNECTION_MAP,
   getAppConnectionMethodDetails,
-  useGetAppConnectionOauthReturnUrl
+  useGetAppConnectionOauthReturnUrl,
+  stripSensitiveFormFields,
 } from "@app/helpers/appConnections";
 import { isInfisicalCloud } from "@app/helpers/platform";
 import { useScopeVariant } from "@app/hooks";
@@ -204,15 +205,15 @@ export const AzureClientSecretsConnectionForm = ({ appConnection, onSubmit, proj
         localStorage.setItem("latestCSRFToken", state);
         localStorage.setItem(
           "azureClientSecretsConnectionFormData",
-          JSON.stringify({
+          JSON.stringify(stripSensitiveFormFields({
             ...formData,
             connectionId: appConnection?.id,
             projectId,
             returnUrl
-          } as AzureClientSecretsFormData)
+          } as AzureClientSecretsFormData))
         );
         window.location.assign(
-          `https://login.microsoftonline.com/${formData.tenantId || "common"}/oauth2/v2.0/authorize?client_id=${oauthClientId}&response_type=code&redirect_uri=${window.location.origin}/organization/app-connections/azure/oauth/callback&response_mode=query&scope=https://graph.microsoft.com/.default%20openid%20offline_access&state=${state}<:>azure-client-secrets`
+          `https://login.microsoftonline.com/${encodeURIComponent(formData.tenantId || "common")}/oauth2/v2.0/authorize?client_id=${oauthClientId}&response_type=code&redirect_uri=${window.location.origin}/organization/app-connections/azure/oauth/callback&response_mode=query&scope=https://graph.microsoft.com/.default%20openid%20offline_access&state=${state}<:>azure-client-secrets`
         );
         break;
 

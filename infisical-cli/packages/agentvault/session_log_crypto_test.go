@@ -197,3 +197,18 @@ func TestAChunkIDIsALowercaseUUIDv7CarryingItsTime(t *testing.T) {
 		t.Fatal("two chunks closed in the same millisecond got the same id")
 	}
 }
+
+// CodeQL go/allocation-size-overflow: the make() capacity hint derives from
+// len(plaintext), so oversized inputs are rejected before allocating.
+func TestSealRejectsOversizedPlaintext(t *testing.T) {
+	key := mustHex(t, vectorKeyHex)
+	aad := buildSessionLogAAD(vectorContext.sessionID, vectorContext.chunkID)
+	tooBig := make([]byte, sessionLogMaxChunkPlaintext+1)
+	if _, err := sealSessionLog(key, tooBig, aad); err == nil {
+		t.Fatal("expected an error for a chunk beyond the plaintext cap")
+	}
+	// The cap itself still seals (boundary must remain functional).
+	if _, err := sealSessionLog(key, make([]byte, sessionLogMaxChunkPlaintext), aad); err != nil {
+		t.Fatalf("a chunk at the cap must still seal: %v", err)
+	}
+}

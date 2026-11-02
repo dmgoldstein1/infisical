@@ -23,7 +23,8 @@ import {
 import {
   APP_CONNECTION_MAP,
   getAppConnectionMethodDetails,
-  useGetAppConnectionOauthReturnUrl
+  useGetAppConnectionOauthReturnUrl,
+  stripSensitiveFormFields,
 } from "@app/helpers/appConnections";
 import { isInfisicalCloud } from "@app/helpers/platform";
 import { useScopeVariant } from "@app/hooks";
@@ -106,12 +107,12 @@ export const StripeConnectionForm = ({ appConnection, projectId }: Props) => {
     localStorage.setItem("latestCSRFToken", state);
     localStorage.setItem(
       "stripeConnectionFormData",
-      JSON.stringify({
+      JSON.stringify(stripSensitiveFormFields({
         ...formData,
         connectionId: appConnection?.id,
         returnUrl,
         projectId
-      })
+      }))
     );
 
     // The redirect URI is taken from the origin the user is actually on rather than from config,

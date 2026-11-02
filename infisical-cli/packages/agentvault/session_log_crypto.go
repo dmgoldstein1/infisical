@@ -30,6 +30,11 @@ func sealSessionLog(key, plaintext, aad []byte) ([]byte, error) {
 }
 
 func sealSessionLogWithRand(random io.Reader, key, plaintext, aad []byte) ([]byte, error) {
+	// Chunks are already capped at sessionLogMaxChunkPlaintext upstream; enforce
+	// the bound here too so the allocation below cannot overflow on huge inputs.
+	if len(plaintext) > sessionLogMaxChunkPlaintext {
+		return nil, fmt.Errorf("agent-vault: session log chunk exceeds %d bytes", sessionLogMaxChunkPlaintext)
+	}
 	block, err := aes.NewCipher(key)
 	if err != nil {
 		return nil, fmt.Errorf("agent-vault: session log key is not a valid AES key: %w", err)

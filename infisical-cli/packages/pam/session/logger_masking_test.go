@@ -1,6 +1,7 @@
 package session
 
 import (
+	"net/http"
 	"regexp"
 	"testing"
 
@@ -80,5 +81,28 @@ func TestApplyMaskingNoPatterns(t *testing.T) {
 	byteResult := logger.applyMasking(byteInput)
 	if string(byteResult) != string(byteInput) {
 		t.Errorf("with no patterns, expected bytes unchanged")
+	}
+}
+
+func TestRedactSensitiveHeaders(t *testing.T) {
+	original := http.Header{
+		"Authorization":       {"Bearer hunter2"},
+		"Cookie":              {"session=abc"},
+		"X-Custom":            {"visible"},
+		"Proxy-Authorization": {"Basic dXNlcjpwYXNz"},
+	}
+	redacted := redactSensitiveHeaders(original)
+	for _, key := range []string{"Authorization", "Cookie", "Proxy-Authorization"} {
+		for _, v := range redacted[key] {
+			if v != "[REDACTED]" {
+				t.Errorf("%s leaked: %q", key, v)
+			}
+		}
+	}
+	if got := redacted.Get("X-Custom"); got != "visible" {
+		t.Errorf("non-sensitive header altered: %q", got)
+	}
+	if got := original.Get("Authorization"); got != "Bearer hunter2" {
+		t.Errorf("caller map was mutated: %q", got)
 	}
 }

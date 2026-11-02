@@ -967,26 +967,62 @@ export const AWS_REGIONS = [
 export const CSRF_TOKEN_STORAGE_KEY = "latestCSRFToken";
 export const GITHUB_CONNECTION_FORM_STORAGE_KEY = "githubConnectionFormData";
 
-export const buildGitHubHostUrl = (host?: string | null) =>
-  host && host.trim().length > 0 ? `https://${host.trim()}` : "https://github.com";
+export const buildGitHubHostUrl = (host?: string | null) => {
+  // The host comes from operator input (self-hosted GHES). Keep only the
+  // hostname portion so path/query fragments cannot escape the authorize URL.
+  const cleaned = host?.trim().split(/[\s/?#]/, 1)[0] ?? "";
+  return cleaned.length > 0 ? `https://${cleaned}` : "https://github.com";
+};
 
 export const buildGitHubAppUrl = (
   slug: string,
   host?: string | null,
   instanceType?: "cloud" | "server"
-) => `${buildGitHubHostUrl(host)}/${instanceType === "server" ? "github-apps" : "apps"}/${slug}`;
+) => `${buildGitHubHostUrl(host)}/${instanceType === "server" ? "github-apps" : "apps"}/${encodeURIComponent(slug)}`;
 
 export const buildGitHubAppInstallUrl = (
   slug: string,
   state: string,
   host?: string | null,
   instanceType?: "cloud" | "server"
-) => `${buildGitHubAppUrl(slug, host, instanceType)}/installations/new?state=${state}`;
+) =>
+  `${buildGitHubAppUrl(slug, host, instanceType)}/installations/new?state=${encodeURIComponent(state)}`;
 
 export const generateCsrfToken = () =>
   Array.from(crypto.getRandomValues(new Uint8Array(16)))
     .map((b) => b.toString(16).padStart(2, "0"))
     .join("");
+
+// Leaf keys that must never be persisted to storage for the OAuth redirect
+// round-trip. The OAuth form variants carry no credentials, but a value typed
+// under a previously selected method (e.g. a client secret) could otherwise be
+// written to localStorage via the `{...formData}` spread. Structure and
+// non-secret fields (tenant/host/URLs/returnUrl) are preserved untouched.
+const SENSITIVE_FORM_KEYS: ReadonlySet<string> = new Set([
+  "password",
+  "passwd",
+  "secret",
+  "clientsecret",
+  "accesstoken",
+  "refreshtoken",
+  "idtoken",
+  "privatekey",
+  "apikey",
+  "token"
+]);
+
+export const stripSensitiveFormFields = <T>(value: T): T => {
+  if (Array.isArray(value)) return value.map(stripSensitiveFormFields) as unknown as T;
+  if (value && typeof value === "object") {
+    const out: Record<string, unknown> = {};
+    for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
+      if (SENSITIVE_FORM_KEYS.has(key.toLowerCase())) continue;
+      out[key] = stripSensitiveFormFields(entry);
+    }
+    return out as T;
+  }
+  return value;
+};
 
 export const consumeCsrfToken = (state: string) => {
   if (state !== localStorage.getItem(CSRF_TOKEN_STORAGE_KEY)) return false;

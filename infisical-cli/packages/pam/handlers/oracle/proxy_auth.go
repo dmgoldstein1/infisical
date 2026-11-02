@@ -429,6 +429,10 @@ func extractDataPayload(pkt []byte) ([]byte, error) {
 
 const maxAuthRequestUserKVPGap = 8
 
+// TNS packets are capped at 1<<22 by ReadFullPacket; rewrites stay
+// far under that, so larger inputs are rejected before allocating.
+const maxOracleRewriteBytes = 1 << 22
+
 func phaseTwoAccepted(raw []byte, use32BitLen bool) bool {
 	if PacketTypeOf(raw) != PacketTypeData {
 		return false
@@ -541,6 +545,9 @@ func rewriteAuthRequestUserWithFraming(payload []byte, expectedSubOp byte, newUs
 
 	newUserBytes := []byte(newUser)
 	newUserLen := len(newUserBytes)
+	if len(payload) > maxOracleRewriteBytes || len(newUserBytes) > maxOracleRewriteBytes {
+		return nil, fmt.Errorf("auth request rewrite input too large: payload=%d user=%d", len(payload), len(newUserBytes))
+	}
 
 	out := make([]byte, 0, len(payload)+16)
 	out = append(out, payload[:hasUserPos]...)
@@ -573,6 +580,9 @@ func rewriteConnectServiceName(pkt []byte, newName string) []byte {
 	oldVal := pkt[valStart:valEnd]
 	newVal := []byte(newName)
 	if bytes.Equal(oldVal, newVal) {
+		return pkt
+	}
+	if len(pkt) > maxOracleRewriteBytes || len(newVal) > maxOracleRewriteBytes {
 		return pkt
 	}
 

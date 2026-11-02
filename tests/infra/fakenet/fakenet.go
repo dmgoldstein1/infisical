@@ -12,6 +12,8 @@
 package fakenet
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"log"
 	"net/http"
@@ -158,15 +160,14 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// One line per outbound call, always. Container logs are captured to a file
 	// anyway, and this is the first thing worth reading when a sync did not do what
 	// a test expected: it says whether the call happened at all, and under which
-	// credential.
-	log.Printf("%-6s %s%s -> %d  scope=%s", r.Method, host, r.URL.Path, rec.status, short(key))
+	// credential. The credential itself is never logged; only a stable,
+	// non-reversible fingerprint of it.
+	log.Printf("%-6s %s%s -> %d  scope=%s", r.Method, host, r.URL.Path, rec.status, scopeTag(key))
 }
 
-func short(key string) string {
-	if len(key) > 12 {
-		return key[:12] + "..."
-	}
-	return key
+func scopeTag(key string) string {
+	sum := sha256.Sum256([]byte(key))
+	return hex.EncodeToString(sum[:])[:12]
 }
 
 // scope returns a scope, creating it the first time a credential is seen.

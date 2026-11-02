@@ -68,9 +68,29 @@ export const GitlabAuthorizePage = () => {
       (gitLabURL as string).trim() === "" ? "" : (gitLabURL as string).trim()
     }`;
     localStorageService.setIntegrationProjectId(currentProject.id);
-    const link = `${baseURL}/oauth/authorize?client_id=${integrationOption.clientId}&redirect_uri=${window.location.origin}/integrations/gitlab/oauth2/callback&response_type=code&state=${state}`;
+    // Normalize the operator-supplied instance URL and refuse non-http(s)
+    // schemes (e.g. `javascript:`) before navigating to it.
+    const normalizedBase = /^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(baseURL)
+      ? baseURL
+      : `https://${baseURL}`;
+    let authorizeUrl: URL;
+    try {
+      authorizeUrl = new URL(`${normalizedBase}/oauth/authorize`);
+    } catch {
+      throw new Error("Invalid GitLab URL");
+    }
+    if (authorizeUrl.protocol !== "https:" && authorizeUrl.protocol !== "http:") {
+      throw new Error("Invalid GitLab URL: only http(s) URLs are allowed");
+    }
+    authorizeUrl.searchParams.set("client_id", integrationOption.clientId);
+    authorizeUrl.searchParams.set(
+      "redirect_uri",
+      `${window.location.origin}/integrations/gitlab/oauth2/callback`
+    );
+    authorizeUrl.searchParams.set("response_type", "code");
+    authorizeUrl.searchParams.set("state", state);
 
-    window.location.assign(link);
+    window.location.assign(authorizeUrl.toString());
   };
 
   return (

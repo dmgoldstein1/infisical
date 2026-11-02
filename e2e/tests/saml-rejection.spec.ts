@@ -19,7 +19,7 @@ const TEST_FIRST_NAME = "E2E";
 const TEST_LAST_NAME = "RejectionTest";
 
 const makeExternalId = (): string => {
-  const runId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const runId = `${Date.now()}-${crypto.randomUUID()}`;
   return `e2e-rej-${runId}@infisical-e2e.test`;
 };
 

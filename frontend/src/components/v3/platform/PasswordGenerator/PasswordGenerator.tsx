@@ -54,6 +54,20 @@ const NONE_RULE_OPTION: RuleOption = {
 const getValueConstraints = (rule: TSecretValidationRule): TValueConstraints | undefined =>
   rule.type === SecretValidationRuleType.StaticSecrets ? rule.valueConstraints : undefined;
 
+// Uniform integer in [0, range) via rejection sampling: `%` on raw random
+// words biases results toward low values whenever range is not a power of two.
+const getUniformRandomInt = (range: number): number => {
+  if (range <= 1) return 0;
+  const words = new Uint32Array(1);
+  const limit = Math.floor(0x1_0000_0000 / range) * range;
+  let word = 0;
+  do {
+    crypto.getRandomValues(words);
+    word = words[0];
+  } while (word >= limit);
+  return word % range;
+};
+
 const hasValueConstraints = (rule: TSecretValidationRule): boolean =>
   Object.values(getValueConstraints(rule) ?? {}).some((value) => value !== undefined);
 
@@ -85,15 +99,11 @@ const generateFromConstraints = (constraints: TValueConstraints): string => {
     const targetMax = Math.max(maxLength - fixedLength, 1);
     const lengthRange = Math.max(targetMax - targetMin, 0);
     const randomLength =
-      lengthRange > 0
-        ? targetMin + (crypto.getRandomValues(new Uint32Array(1))[0] % (lengthRange + 1))
-        : Math.max(targetMin, 1);
+      lengthRange > 0 ? targetMin + getUniformRandomInt(lengthRange + 1) : Math.max(targetMin, 1);
 
     const charset = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_.~!*";
-    const randomBytes = new Uint32Array(randomLength);
-    crypto.getRandomValues(randomBytes);
     for (let i = 0; i < randomLength; i += 1) {
-      middle += charset[randomBytes[i] % charset.length];
+      middle += charset[getUniformRandomInt(charset.length)];
     }
   }
 

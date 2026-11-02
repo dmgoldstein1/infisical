@@ -69,7 +69,8 @@ func (h *ProxyTestHelper) CreateSecretWithApi(ctx context.Context, secret Secret
 	})
 	require.NoError(h.T, err)
 	require.Equal(h.T, http.StatusOK, resp.StatusCode(), "Failed to create secret: %s", string(resp.Body))
-	slog.Info("Created secret", "name", secret.SecretKey, "value", secret.SecretValue)
+	// Never log secret values, even in test helpers: CI output is persisted.
+	slog.Info("Created secret", "name", secret.SecretKey, "value", "[REDACTED]")
 }
 
 // UpdateSecretWithApi updates a secret directly through Infisical API (not through proxy)
@@ -83,7 +84,7 @@ func (h *ProxyTestHelper) UpdateSecretWithApi(ctx context.Context, secret Secret
 	})
 	require.NoError(h.T, err)
 	require.Equal(h.T, http.StatusOK, resp.StatusCode(), "Failed to update secret: %s", string(resp.Body))
-	slog.Info("Updated secret directly", "name", secret.SecretKey, "newValue", secret.SecretValue)
+	slog.Info("Updated secret directly", "name", secret.SecretKey, "newValue", "[REDACTED]")
 }
 
 // GetSecretsWithProxy fetches secrets through the proxy

@@ -44,7 +44,8 @@ import {
   generateCsrfToken,
   getAppConnectionMethodDetails,
   GITHUB_CONNECTION_FORM_STORAGE_KEY,
-  useGetAppConnectionOauthReturnUrl
+  useGetAppConnectionOauthReturnUrl,
+  stripSensitiveFormFields,
 } from "@app/helpers/appConnections";
 import { isInfisicalCloud } from "@app/helpers/platform";
 import { useScopeVariant } from "@app/hooks";
@@ -287,7 +288,7 @@ export const GitHubConnectionForm = ({ appConnection, projectId, onSubmit }: Pro
     localStorage.setItem(CSRF_TOKEN_STORAGE_KEY, installState);
     localStorage.setItem(
       GITHUB_CONNECTION_FORM_STORAGE_KEY,
-      JSON.stringify({
+      JSON.stringify(stripSensitiveFormFields({
         ...formData,
         credentials: {
           ...(formData.credentials as TGitHubConnection["credentials"]),
@@ -297,7 +298,7 @@ export const GitHubConnectionForm = ({ appConnection, projectId, onSubmit }: Pro
         connectionId: appConnection?.id,
         projectId,
         returnUrl
-      } as GitHubFormData)
+      } as GitHubFormData))
     );
   };
 
@@ -379,7 +380,7 @@ export const GitHubConnectionForm = ({ appConnection, projectId, onSubmit }: Pro
       case GitHubConnectionMethod.OAuth:
         storeConnectionFormData(formData, installState);
         window.location.assign(
-          `${githubHost}/login/oauth/authorize?client_id=${oauthClientId}&response_type=code&scope=repo,admin:org&redirect_uri=${window.location.origin}/organization/app-connections/github/oauth/callback&state=${installState}`
+          `${githubHost}/login/oauth/authorize?client_id=${oauthClientId}&response_type=code&scope=repo,admin:org&redirect_uri=${window.location.origin}/organization/app-connections/github/oauth/callback&state=${encodeURIComponent(installState)}`
         );
         break;
       default:

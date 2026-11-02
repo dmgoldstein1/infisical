@@ -104,7 +104,13 @@ export const registerAnnouncementRouter = async (server: FastifyZodProvider) => 
         throw new NotFoundError({ message: "Asset not found" });
       }
 
-      const filePath = path.join(BUNDLED_IMAGE_DIR, filename);
+      // Defense in depth: the allowlist above already rejects any separator,
+      // but resolve + contain-check the final path so a future regex change
+      // cannot turn this into a traversal.
+      const filePath = path.resolve(BUNDLED_IMAGE_DIR, filename);
+      if (filePath !== path.resolve(BUNDLED_IMAGE_DIR) && !filePath.startsWith(`${path.resolve(BUNDLED_IMAGE_DIR)}${path.sep}`)) {
+        throw new NotFoundError({ message: "Asset not found" });
+      }
       try {
         await stat(filePath);
       } catch {

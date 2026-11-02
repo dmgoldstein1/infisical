@@ -23,7 +23,8 @@ import {
 import {
   APP_CONNECTION_MAP,
   getAppConnectionMethodDetails,
-  useGetAppConnectionOauthReturnUrl
+  useGetAppConnectionOauthReturnUrl,
+  stripSensitiveFormFields,
 } from "@app/helpers/appConnections";
 import { isInfisicalCloud } from "@app/helpers/platform";
 import { useScopeVariant } from "@app/hooks";
@@ -91,12 +92,12 @@ export const GitHubRadarConnectionForm = ({ appConnection, projectId }: Props) =
     localStorage.setItem("latestCSRFToken", state);
     localStorage.setItem(
       "githubRadarConnectionFormData",
-      JSON.stringify({
+      JSON.stringify(stripSensitiveFormFields({
         ...formData,
         connectionId: appConnection?.id,
         projectId,
         returnUrl
-      } as GitHubRadarFormData)
+      } as GitHubRadarFormData))
     );
 
     switch (formData.method) {

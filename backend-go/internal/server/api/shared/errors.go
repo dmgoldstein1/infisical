@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
+	"regexp"
 	"strings"
 
 	"github.com/doordash-oss/oapi-codegen-dd/v3/pkg/runtime"
@@ -100,9 +102,17 @@ func (h *ErrorHandler) writeHTTPError(ctx context.Context, w http.ResponseWriter
 
 // writeValidationError writes validation errors as a ValidationError response.
 func (h *ErrorHandler) writeValidationError(ctx context.Context, w http.ResponseWriter, reqID string, validationErrors runtime.ValidationErrors) {
+	// Log only field names + count: validation failures echo back the rejected
+	// input values, which may contain secrets (e.g. a password that failed a
+	// policy check). Never log the values themselves.
+	fieldNames := make([]string, 0, len(validationErrors))
+	for _, ve := range validationErrors {
+		fieldNames = append(fieldNames, ve.Field)
+	}
 	h.Logger.WarnContext(ctx, "validation error",
 		slog.String("reqId", reqID),
-		slog.Any("errors", validationErrors),
+		slog.Int("count", len(validationErrors)),
+		slog.Any("fields", fieldNames),
 	)
 
 	fieldErrors := make([]FieldError, 0, len(validationErrors))
@@ -150,11 +160,31 @@ func (h *ErrorHandler) writeClientError(ctx context.Context, w http.ResponseWrit
 	_ = json.NewEncoder(w).Encode(resp)
 }
 
+// sensitiveLogPatterns mask credential-shaped values before they reach logs.
+// Error chains can embed request headers (Authorization, cookies) or user
+// input, so the message is scrubbed while the error type is kept for debugging.
+var sensitiveLogPatterns = []*struct {
+	re   *regexp.Regexp
+	repl string
+}{
+	{regexp.MustCompile(`(?i)\b(bearer\s+)[A-Za-z0-9\-._~+/=]+`), "${1}[REDACTED]"},
+	{regexp.MustCompile(`(?i)\b(basic\s+)[A-Za-z0-9+/=]+`), "${1}[REDACTED]"},
+	{regexp.MustCompile(`(?i)("?(?:password|passwd|secret|api[_-]?key|access[_-]?token|client[_-]?secret|authorization)"?\s*[:=]\s*"?)[^"'\s,}]+`), "${1}[REDACTED]"},
+}
+
+func redactSensitiveText(s string) string {
+	for _, p := range sensitiveLogPatterns {
+		s = p.re.ReplaceAllString(s, p.repl)
+	}
+	return s
+}
+
 // writeInternalError writes a generic 500 error.
 func (h *ErrorHandler) writeInternalError(ctx context.Context, w http.ResponseWriter, reqID string, err error) {
 	h.Logger.ErrorContext(ctx, "unhandled error",
 		slog.String("reqId", reqID),
-		slog.Any("error", err),
+		slog.String("errorType", fmt.Sprintf("%T", err)),
+		slog.String("error", redactSensitiveText(err.Error())),
 	)
 
 	resp := Error{

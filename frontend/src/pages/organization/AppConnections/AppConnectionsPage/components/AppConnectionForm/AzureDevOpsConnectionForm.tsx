@@ -25,7 +25,8 @@ import {
 import {
   APP_CONNECTION_MAP,
   getAppConnectionMethodDetails,
-  useGetAppConnectionOauthReturnUrl
+  useGetAppConnectionOauthReturnUrl,
+  stripSensitiveFormFields,
 } from "@app/helpers/appConnections";
 import { isInfisicalCloud } from "@app/helpers/platform";
 import { useScopeVariant } from "@app/hooks";
@@ -208,16 +209,16 @@ export const AzureDevOpsConnectionForm = ({ appConnection, onSubmit, projectId }
         localStorage.setItem("latestCSRFToken", state);
         localStorage.setItem(
           "azureDevOpsConnectionFormData",
-          JSON.stringify({
+          JSON.stringify(stripSensitiveFormFields({
             ...formData,
             connectionId: appConnection?.id,
             projectId,
             returnUrl
-          } as AzureDevOpsFormData)
+          } as AzureDevOpsFormData))
         );
 
         window.location.assign(
-          `https://login.microsoftonline.com/${formData.tenantId || "common"}/oauth2/v2.0/authorize?client_id=${oauthClientId}&response_type=code&redirect_uri=${window.location.origin}/organization/app-connections/azure/oauth/callback&response_mode=query&scope=https://azconfig.io/.default%20openid%20offline_access&state=${state}<:>azure-devops`
+          `https://login.microsoftonline.com/${encodeURIComponent(formData.tenantId || "common")}/oauth2/v2.0/authorize?client_id=${oauthClientId}&response_type=code&redirect_uri=${window.location.origin}/organization/app-connections/azure/oauth/callback&response_mode=query&scope=https://azconfig.io/.default%20openid%20offline_access&state=${state}<:>azure-devops`
         );
         break;
       case AzureDevOpsConnectionMethod.AccessToken:

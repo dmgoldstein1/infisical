@@ -102,7 +102,7 @@ func (s *Events) buffer(tt *testing.T) (*stream, *buffer) {
 	if b == nil {
 		tt.Fatalf("fakenet: no events are tracked for scope %s on %s.\n"+
 			"Whatever minted the credential must call fakenet.Track before handing it to Infisical",
-			short(s.key), s.host)
+			scopeTag(s.key), s.host)
 	}
 	return st, b
 }
@@ -151,7 +151,7 @@ func expectNoEvent[E Event](st *stream, b *buffer, key string, cfg waitConfig, m
 			rec := b.records[i]
 			st.mu.Unlock()
 			return fmt.Errorf("fakenet: %s matched within %s, expected none (scope %s)\n    #%d  %s",
-				name, cfg.within, short(key), rec.Seq, rec.Details)
+				name, cfg.within, scopeTag(key), rec.Seq, rec.Details)
 		}
 		changed := b.changed
 		st.mu.Unlock()
@@ -188,7 +188,7 @@ func lossLocked(st *stream, b *buffer, key string) error {
 	case st.gap:
 		return errors.New("fakenet: the event stream reconnected past retained history, so events were lost")
 	case b.overflow:
-		return fmt.Errorf("fakenet: more than %d events for scope %s, the rest were not kept", bufferCap, short(key))
+		return fmt.Errorf("fakenet: more than %d events for scope %s, the rest were not kept", bufferCap, scopeTag(key))
 	}
 	return nil
 }
@@ -214,7 +214,7 @@ func describeMiss(name string, cfg waitConfig, b *buffer, key string) string {
 	}
 
 	var out strings.Builder
-	fmt.Fprintf(&out, "fakenet: waited %s for %s (scope %s)\n", cfg.within, name, short(key))
+	fmt.Fprintf(&out, "fakenet: waited %s for %s (scope %s)\n", cfg.within, name, scopeTag(key))
 	switch {
 	case claimed > 0 && len(same) == 0:
 		fmt.Fprintf(&out, "\n  %s arrived %d times, all already claimed by an earlier ExpectEvent;"+

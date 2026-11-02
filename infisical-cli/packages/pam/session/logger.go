@@ -313,9 +313,33 @@ func (sl *EncryptedSessionLogger) LogSessionEvent(event SessionEvent) error {
 
 func (sl *EncryptedSessionLogger) LogHttpEvent(event HttpEvent) error {
 	return sl.writeEvent(func() ([]byte, error) {
+		event.Headers = redactSensitiveHeaders(event.Headers)
 		event.Body = sl.applyMasking(event.Body)
 		return json.Marshal(event)
 	})
+}
+
+// Headers can carry Authorization / Proxy-Authorization / Cookie values, so
+// they are scrubbed before the event is persisted. The map is cloned: callers
+// keep sending the original request.
+func redactSensitiveHeaders(headers http.Header) http.Header {
+	if len(headers) == 0 {
+		return headers
+	}
+	redacted := make(http.Header, len(headers))
+	for key, values := range headers {
+		switch http.CanonicalHeaderKey(key) {
+		case "Authorization", "Proxy-Authorization", "Proxy-Authenticate", "Cookie", "Set-Cookie", "X-Api-Key":
+			masked := make([]string, len(values))
+			for i := range values {
+				masked[i] = "[REDACTED]"
+			}
+			redacted[key] = masked
+		default:
+			redacted[key] = values
+		}
+	}
+	return redacted
 }
 
 func (sl *EncryptedSessionLogger) Close() error {

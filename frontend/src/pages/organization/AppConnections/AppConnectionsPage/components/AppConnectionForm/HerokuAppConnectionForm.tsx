@@ -26,7 +26,8 @@ import {
 import {
   APP_CONNECTION_MAP,
   getAppConnectionMethodDetails,
-  useGetAppConnectionOauthReturnUrl
+  useGetAppConnectionOauthReturnUrl,
+  stripSensitiveFormFields,
 } from "@app/helpers/appConnections";
 import { isInfisicalCloud } from "@app/helpers/platform";
 import { useScopeVariant } from "@app/hooks";
@@ -128,12 +129,12 @@ export const HerokuConnectionForm = ({ appConnection, onSubmit: formSubmit, proj
           localStorage.setItem("latestCSRFToken", state);
           localStorage.setItem(
             "herokuConnectionFormData",
-            JSON.stringify({
+            JSON.stringify(stripSensitiveFormFields({
               ...formData,
               connectionId: appConnection?.id,
               returnUrl,
               projectId
-            })
+            }))
           );
 
           // Redirect to Heroku OAuth

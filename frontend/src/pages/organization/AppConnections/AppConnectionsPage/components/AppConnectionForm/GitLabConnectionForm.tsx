@@ -27,7 +27,8 @@ import {
 import {
   APP_CONNECTION_MAP,
   getAppConnectionMethodDetails,
-  useGetAppConnectionOauthReturnUrl
+  useGetAppConnectionOauthReturnUrl,
+  stripSensitiveFormFields,
 } from "@app/helpers/appConnections";
 import { isInfisicalCloud } from "@app/helpers/platform";
 import { useScopeVariant } from "@app/hooks";
@@ -151,13 +152,13 @@ export const GitLabConnectionForm = ({ appConnection, onSubmit: formSubmit, proj
           localStorage.setItem("latestCSRFToken", state);
           localStorage.setItem(
             "gitlabConnectionFormData",
-            JSON.stringify({
+            JSON.stringify(stripSensitiveFormFields({
               ...formData,
               connectionId: appConnection?.id,
               isUpdate,
               projectId,
               returnUrl
-            } as GitLabFormData)
+            } as GitLabFormData))
           );
 
           // Redirect to Gitlab OAuth
@@ -165,7 +166,13 @@ export const GitLabConnectionForm = ({ appConnection, onSubmit: formSubmit, proj
             gitLabURL && (gitLabURL as string)?.trim() !== ""
               ? (gitLabURL as string)?.trim()
               : "https://gitlab.com";
-          const oauthUrl = new URL(`${baseURL}/oauth/authorize`);
+          const normalizedBaseURL = /^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(baseURL)
+            ? baseURL
+            : `https://${baseURL}`;
+          const oauthUrl = new URL(`${normalizedBaseURL}/oauth/authorize`);
+          if (oauthUrl.protocol !== "https:" && oauthUrl.protocol !== "http:") {
+            throw new Error("Invalid GitLab URL: only http(s) URLs are allowed");
+          }
           oauthUrl.searchParams.set("client_id", oauthClientId);
           oauthUrl.searchParams.set(
             "redirect_uri",

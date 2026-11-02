@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"net/url"
 	"path/filepath"
@@ -1835,6 +1836,17 @@ func (s *GitHub) resolveOwnerType(ctx context.Context, client *github.Client, lo
 	return user.GetType(), nil
 }
 
+// parseResourceNumber validates a GitHub issue/PR/discussion number parsed from
+// a URL. Resource numbers must fit in an int32 for the GraphQL API (githubv4.Int);
+// Atoi on 64-bit platforms would silently wrap larger values.
+func parseResourceNumber(kind, id string) (int, error) {
+	num64, err := strconv.ParseInt(id, 10, 64)
+	if err != nil || num64 <= 0 || num64 > math.MaxInt32 {
+		return 0, fmt.Errorf("invalid %s number %q", kind, id)
+	}
+	return int(num64), nil
+}
+
 // scanURL dispatches to the appropriate single-resource scanner based on the URL.
 func (s *GitHub) scanURL(ctx context.Context, client *github.Client, rawURL string, yield FragmentsFunc) error {
 	parsed, err := ParseGitHubURL(rawURL)
@@ -1855,51 +1867,51 @@ func (s *GitHub) scanURL(ctx context.Context, client *github.Client, rawURL stri
 
 	switch parsed.Resource {
 	case "issue":
-		num, err := strconv.Atoi(parsed.ID)
+		num64, err := parseResourceNumber("issue", parsed.ID)
 		if err != nil {
-			return fmt.Errorf("invalid issue number %q", parsed.ID)
+			return err
 		}
 		var q ghSingleIssueQuery
 		vars := map[string]any{
 			"owner": githubv4.String(owner), "repo": githubv4.String(repo),
-			"number": githubv4.Int(num), "commentsFirst": githubv4.Int(gqlCommentsFirst),
+			"number": githubv4.Int(int(num64)), "commentsFirst": githubv4.Int(gqlCommentsFirst),
 		}
 		if err := s.gqlQuery(ctx, &q, vars); err != nil {
-			return fmt.Errorf("fetch issue %d: %w", num, err)
+			return fmt.Errorf("fetch issue %d: %w", num64, err)
 		}
 		var dummy int
 		return s.emitIssueAndComments(ctx, owner, repo, q.Repository.Issue, &dummy, yield)
 
 	case "pr":
-		num, err := strconv.Atoi(parsed.ID)
+		num64, err := parseResourceNumber("PR", parsed.ID)
 		if err != nil {
-			return fmt.Errorf("invalid PR number %q", parsed.ID)
+			return err
 		}
 		var q ghSinglePRQuery
 		vars := map[string]any{
 			"owner": githubv4.String(owner), "repo": githubv4.String(repo),
-			"number": githubv4.Int(num), "commentsFirst": githubv4.Int(gqlCommentsFirst),
+			"number": githubv4.Int(int(num64)), "commentsFirst": githubv4.Int(gqlCommentsFirst),
 			"threadsFirst": githubv4.Int(gqlThreadsFirst),
 		}
 		if err := s.gqlQuery(ctx, &q, vars); err != nil {
-			return fmt.Errorf("fetch pr %d: %w", num, err)
+			return fmt.Errorf("fetch pr %d: %w", num64, err)
 		}
 		var dummy int
 		return s.emitPRAndComments(ctx, owner, repo, q.Repository.PullRequest, &dummy, yield)
 
 	case "discussion":
-		num, err := strconv.Atoi(parsed.ID)
+		num64, err := parseResourceNumber("discussion", parsed.ID)
 		if err != nil {
-			return fmt.Errorf("invalid discussion number %q", parsed.ID)
+			return err
 		}
 		var q ghSingleDiscussionQuery
 		vars := map[string]any{
 			"owner": githubv4.String(owner), "repo": githubv4.String(repo),
-			"number": githubv4.Int(num), "commentsFirst": githubv4.Int(gqlCommentsFirst),
+			"number": githubv4.Int(int(num64)), "commentsFirst": githubv4.Int(gqlCommentsFirst),
 			"repliesFirst": githubv4.Int(gqlRepliesFirst),
 		}
 		if err := s.gqlQuery(ctx, &q, vars); err != nil {
-			return fmt.Errorf("fetch discussion %d: %w", num, err)
+			return fmt.Errorf("fetch discussion %d: %w", num64, err)
 		}
 		var dummy int
 		return s.emitDiscussion(ctx, owner, repo, q.Repository.Discussion, &dummy, yield)

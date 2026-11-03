@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"net/url"
 	"path/filepath"
@@ -1856,7 +1857,7 @@ func (s *GitHub) scanURL(ctx context.Context, client *github.Client, rawURL stri
 	switch parsed.Resource {
 	case "issue":
 		num, err := strconv.Atoi(parsed.ID)
-		if err != nil {
+		if err != nil || num < 0 || num > math.MaxInt32 {
 			return fmt.Errorf("invalid issue number %q", parsed.ID)
 		}
 		var q ghSingleIssueQuery
@@ -1872,7 +1873,7 @@ func (s *GitHub) scanURL(ctx context.Context, client *github.Client, rawURL stri
 
 	case "pr":
 		num, err := strconv.Atoi(parsed.ID)
-		if err != nil {
+		if err != nil || num < 0 || num > math.MaxInt32 {
 			return fmt.Errorf("invalid PR number %q", parsed.ID)
 		}
 		var q ghSinglePRQuery
@@ -1889,7 +1890,7 @@ func (s *GitHub) scanURL(ctx context.Context, client *github.Client, rawURL stri
 
 	case "discussion":
 		num, err := strconv.Atoi(parsed.ID)
-		if err != nil {
+		if err != nil || num < 0 || num > math.MaxInt32 {
 			return fmt.Errorf("invalid discussion number %q", parsed.ID)
 		}
 		var q ghSingleDiscussionQuery

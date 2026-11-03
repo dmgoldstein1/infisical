@@ -22,6 +22,7 @@ import {
   Input
 } from "@app/components/v3";
 import { ROUTE_PATHS } from "@app/const/routes";
+import { sanitizeAzureTenantId } from "@app/helpers/safeRedirect";
 
 const schema = z.object({
   tenantId: z.string().trim().optional()
@@ -39,9 +40,9 @@ export function AzureKeyVaultAuthorizePage() {
   });
 
   const onFormSubmit = async ({ tenantId }: FormData) => {
-    const link = `https://login.microsoftonline.com/${
-      tenantId ?? "common"
-    }/oauth2/v2.0/authorize?client_id=${clientId}&response_type=code&redirect_uri=${
+    const link = `https://login.microsoftonline.com/${encodeURIComponent(
+      sanitizeAzureTenantId(tenantId ?? "common")
+    )}/oauth2/v2.0/authorize?client_id=${clientId}&response_type=code&redirect_uri=${
       window.location.origin
     }/integrations/azure-key-vault/oauth2/callback&response_mode=query&scope=https://vault.azure.net/.default openid offline_access&state=${state}`;
 

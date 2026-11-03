@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -19,7 +20,11 @@ import (
 )
 
 func buildHttpInternalServerError(message string) string {
-	return fmt.Sprintf("HTTP/1.1 500 Internal Server Error\r\nContent-Type: application/json\r\n\r\n{\"message\": \"gateway: %s\"}", message)
+	body, err := json.Marshal(map[string]string{"message": "gateway: " + message})
+	if err != nil {
+		body = []byte(`{"message":"gateway: internal error"}`)
+	}
+	return "HTTP/1.1 500 Internal Server Error\r\nContent-Type: application/json\r\n\r\n" + string(body)
 }
 
 func handleHTTPProxy(ctx context.Context, conn *tls.Conn, reader *bufio.Reader, forwardConfig *ForwardConfig) error {

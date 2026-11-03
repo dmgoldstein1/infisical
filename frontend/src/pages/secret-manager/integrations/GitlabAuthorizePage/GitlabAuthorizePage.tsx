@@ -23,6 +23,7 @@ import {
 } from "@app/components/v3";
 import { useProject } from "@app/context";
 import { localStorageService } from "@app/helpers/localStorage";
+import { sanitizeHttpBaseUrl } from "@app/helpers/safeRedirect";
 import { useGetCloudIntegrations } from "@app/hooks/api";
 
 import { createIntegrationMissingEnvVarsNotification } from "../../IntegrationsListPage/IntegrationsListPage.utils";
@@ -57,8 +58,7 @@ export const GitlabAuthorizePage = () => {
       return;
     }
 
-    const baseURL =
-      (gitLabURL as string).trim() === "" ? "https://gitlab.com" : (gitLabURL as string).trim();
+    const baseURL = sanitizeHttpBaseUrl(gitLabURL, "https://gitlab.com");
 
     const csrfToken = crypto.randomBytes(16).toString("hex");
     localStorage.setItem("latestCSRFToken", csrfToken);
@@ -68,7 +68,7 @@ export const GitlabAuthorizePage = () => {
       (gitLabURL as string).trim() === "" ? "" : (gitLabURL as string).trim()
     }`;
     localStorageService.setIntegrationProjectId(currentProject.id);
-    const link = `${baseURL}/oauth/authorize?client_id=${integrationOption.clientId}&redirect_uri=${window.location.origin}/integrations/gitlab/oauth2/callback&response_type=code&state=${state}`;
+    const link = `${baseURL}/oauth/authorize?client_id=${integrationOption.clientId}&redirect_uri=${window.location.origin}/integrations/gitlab/oauth2/callback&response_type=code&state=${encodeURIComponent(state)}`;
 
     window.location.assign(link);
   };

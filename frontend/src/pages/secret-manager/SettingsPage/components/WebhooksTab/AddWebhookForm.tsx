@@ -28,6 +28,7 @@ import {
   SheetHeader,
   SheetTitle
 } from "@app/components/v3";
+import { isSlackWebhookUrl } from "@app/helpers/safeRedirect";
 import {
   DEFAULT_ENABLED_EVENTS,
   WEBHOOK_EVENT_METADATA,
@@ -65,7 +66,7 @@ const formSchema = z
     enabledEvents: z.record(z.nativeEnum(WebhookEvent), z.boolean()).default(DEFAULT_ENABLED_EVENTS)
   })
   .superRefine((data, ctx) => {
-    if (data.type === WebhookType.SLACK && !data.webhookUrl.includes("hooks.slack.com")) {
+    if (data.type === WebhookType.SLACK && !isSlackWebhookUrl(data.webhookUrl)) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         message: "Incoming Webhook URL is invalid.",

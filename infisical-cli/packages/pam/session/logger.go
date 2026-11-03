@@ -314,8 +314,41 @@ func (sl *EncryptedSessionLogger) LogSessionEvent(event SessionEvent) error {
 func (sl *EncryptedSessionLogger) LogHttpEvent(event HttpEvent) error {
 	return sl.writeEvent(func() ([]byte, error) {
 		event.Body = sl.applyMasking(event.Body)
+		event.Headers = redactSensitiveHeaders(event.Headers)
 		return json.Marshal(event)
 	})
+}
+
+// redactSensitiveHeaders masks credential-carrying headers in recorded HTTP
+// events. Callers pass req.Header straight in, so the audit log would
+// otherwise persist bearer tokens and cookies in clear text.
+func redactSensitiveHeaders(headers http.Header) http.Header {
+	if len(headers) == 0 {
+		return headers
+	}
+	redacted := make(http.Header, len(headers))
+	for name, values := range headers {
+		if isSensitiveHeader(name) {
+			masked := make([]string, len(values))
+			for i := range values {
+				masked[i] = "[REDACTED]"
+			}
+			redacted[name] = masked
+			continue
+		}
+		redacted[name] = values
+	}
+	return redacted
+}
+
+func isSensitiveHeader(name string) bool {
+	switch http.CanonicalHeaderKey(name) {
+	case "Authorization", "Proxy-Authorization", "Cookie", "Set-Cookie",
+		"X-Api-Key", "X-Auth-Token", "Api-Key", "Private-Token",
+		"X-Vault-Token", "Ocp-Apim-Subscription-Key":
+		return true
+	}
+	return false
 }
 
 func (sl *EncryptedSessionLogger) Close() error {

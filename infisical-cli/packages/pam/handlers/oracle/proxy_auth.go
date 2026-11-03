@@ -429,6 +429,10 @@ func extractDataPayload(pkt []byte) ([]byte, error) {
 
 const maxAuthRequestUserKVPGap = 8
 
+// Oracle identifiers are at most 128 bytes; bounding the replacement keeps
+// the rewrite allocations below from overflowing on hostile input.
+const maxOracleRewriteNameLen = 128
+
 func phaseTwoAccepted(raw []byte, use32BitLen bool) bool {
 	if PacketTypeOf(raw) != PacketTypeData {
 		return false
@@ -452,6 +456,9 @@ func rewriteAuthRequestUser(payload []byte, expectedSubOp byte, newUser string) 
 }
 
 func rewriteAuthRequestUserWithFraming(payload []byte, expectedSubOp byte, newUser string, consumeExtraFraming bool) ([]byte, error) {
+	if len(newUser) == 0 || len(newUser) > maxOracleRewriteNameLen {
+		return nil, fmt.Errorf("auth request username has invalid length %d", len(newUser))
+	}
 	r := NewTTCReader(payload)
 	op, err := r.GetByte()
 	if err != nil {
@@ -558,6 +565,9 @@ func rewriteAuthRequestUserWithFraming(payload []byte, expectedSubOp byte, newUs
 }
 
 func rewriteConnectServiceName(pkt []byte, newName string) []byte {
+	if len(newName) == 0 || len(newName) > maxOracleRewriteNameLen {
+		return pkt
+	}
 	marker := []byte("SERVICE_NAME=")
 	idx := bytes.Index(pkt, marker)
 	if idx < 0 {

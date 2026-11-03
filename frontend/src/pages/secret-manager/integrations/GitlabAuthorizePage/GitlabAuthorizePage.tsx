@@ -57,18 +57,32 @@ export const GitlabAuthorizePage = () => {
       return;
     }
 
-    const baseURL =
-      (gitLabURL as string).trim() === "" ? "https://gitlab.com" : (gitLabURL as string).trim();
+    let baseURL = "https://gitlab.com";
+    const rawGitLabURL = ((gitLabURL as string) ?? "").trim();
+    if (rawGitLabURL !== "") {
+      let parsed: URL;
+      try {
+        parsed = new URL(rawGitLabURL);
+      } catch {
+        return;
+      }
+      if (parsed.protocol !== "https:") return;
+      baseURL = parsed.origin;
+    }
 
     const csrfToken = crypto.randomBytes(16).toString("hex");
     localStorage.setItem("latestCSRFToken", csrfToken);
     localStorageService.setIntegrationProjectId(currentProject.id);
 
-    const state = `${csrfToken}|${
-      (gitLabURL as string).trim() === "" ? "" : (gitLabURL as string).trim()
-    }`;
+    const state = `${csrfToken}|${baseURL === "https://gitlab.com" ? "" : baseURL}`;
     localStorageService.setIntegrationProjectId(currentProject.id);
-    const link = `${baseURL}/oauth/authorize?client_id=${integrationOption.clientId}&redirect_uri=${window.location.origin}/integrations/gitlab/oauth2/callback&response_type=code&state=${state}`;
+    const params = new URLSearchParams({
+      client_id: integrationOption.clientId,
+      redirect_uri: `${window.location.origin}/integrations/gitlab/oauth2/callback`,
+      response_type: "code",
+      state
+    });
+    const link = `${baseURL}/oauth/authorize?${params.toString()}`;
 
     window.location.assign(link);
   };

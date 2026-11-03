@@ -25,6 +25,7 @@ import {
 import {
   APP_CONNECTION_MAP,
   getAppConnectionMethodDetails,
+  sanitizeTenantSegment,
   useGetAppConnectionOauthReturnUrl
 } from "@app/helpers/appConnections";
 import { isInfisicalCloud } from "@app/helpers/platform";
@@ -217,7 +218,7 @@ export const AzureDevOpsConnectionForm = ({ appConnection, onSubmit, projectId }
         );
 
         window.location.assign(
-          `https://login.microsoftonline.com/${formData.tenantId || "common"}/oauth2/v2.0/authorize?client_id=${oauthClientId}&response_type=code&redirect_uri=${window.location.origin}/organization/app-connections/azure/oauth/callback&response_mode=query&scope=https://azconfig.io/.default%20openid%20offline_access&state=${state}<:>azure-devops`
+          `https://login.microsoftonline.com/${sanitizeTenantSegment(formData.tenantId)}/oauth2/v2.0/authorize?client_id=${oauthClientId}&response_type=code&redirect_uri=${window.location.origin}/organization/app-connections/azure/oauth/callback&response_mode=query&scope=https://azconfig.io/.default%20openid%20offline_access&state=${state}<:>azure-devops`
         );
         break;
       case AzureDevOpsConnectionMethod.AccessToken:

@@ -161,10 +161,22 @@ export const GitLabConnectionForm = ({ appConnection, onSubmit: formSubmit, proj
           );
 
           // Redirect to Gitlab OAuth
-          const baseURL =
-            gitLabURL && (gitLabURL as string)?.trim() !== ""
-              ? (gitLabURL as string)?.trim()
-              : "https://gitlab.com";
+          let baseURL = "https://gitlab.com";
+          const rawGitLabURL = ((gitLabURL as string) ?? "").trim();
+          if (rawGitLabURL !== "") {
+            let parsedGitLabURL: URL;
+            try {
+              parsedGitLabURL = new URL(rawGitLabURL);
+            } catch {
+              setIsRedirecting(false);
+              return;
+            }
+            if (parsedGitLabURL.protocol !== "https:") {
+              setIsRedirecting(false);
+              return;
+            }
+            baseURL = parsedGitLabURL.origin;
+          }
           const oauthUrl = new URL(`${baseURL}/oauth/authorize`);
           oauthUrl.searchParams.set("client_id", oauthClientId);
           oauthUrl.searchParams.set(

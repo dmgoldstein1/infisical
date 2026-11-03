@@ -98,6 +98,14 @@ export const StripeConnectionForm = ({ appConnection, projectId }: Props) => {
 
   const onSubmit = (formData: FormData) => {
     if (!oauthClientId || !oauthAuthorizeUrl) return;
+    if (!/^[A-Za-z0-9_-]+$/.test(oauthClientId)) return;
+    let oauthBase: URL;
+    try {
+      oauthBase = new URL(oauthAuthorizeUrl);
+    } catch {
+      return;
+    }
+    if (oauthBase.protocol !== "https:") return;
 
     setIsRedirecting(true);
 
@@ -116,7 +124,7 @@ export const StripeConnectionForm = ({ appConnection, projectId }: Props) => {
 
     // The redirect URI is taken from the origin the user is actually on rather than from config,
     // so one Stripe app serves every deployment listing that origin in its manifest.
-    const oauthUrl = new URL(oauthAuthorizeUrl);
+    const oauthUrl = new URL(oauthBase.toString());
     oauthUrl.searchParams.set("client_id", oauthClientId);
     oauthUrl.searchParams.set(
       "redirect_uri",

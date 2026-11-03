@@ -38,6 +38,7 @@ func Timeout(duration time.Duration) func(http.Handler) http.Handler {
 						tw.timedOut = true
 						reqID := requestid.FromContext(r.Context())
 						tw.ResponseWriter.Header().Set("Content-Type", "application/json")
+						tw.ResponseWriter.Header().Set("X-Content-Type-Options", "nosniff")
 						tw.ResponseWriter.WriteHeader(http.StatusGatewayTimeout)
 
 						resp := errorResponse{

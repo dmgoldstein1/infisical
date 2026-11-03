@@ -12,6 +12,8 @@
 package fakenet
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"log"
 	"net/http"
@@ -163,10 +165,9 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func short(key string) string {
-	if len(key) > 12 {
-		return key[:12] + "..."
-	}
-	return key
+	// Fingerprint, not a prefix: the raw key is a test credential.
+	sum := sha256.Sum256([]byte(key))
+	return hex.EncodeToString(sum[:])[:12]
 }
 
 // scope returns a scope, creating it the first time a credential is seen.
@@ -261,6 +262,7 @@ func (s *Server) refuse(w http.ResponseWriter, r *http.Request, host, reason str
 	log.Printf("%-6s %s%s -> 501  %s", r.Method, host, r.URL.Path, reason)
 
 	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.WriteHeader(http.StatusNotImplemented)
 	_ = json.NewEncoder(w).Encode(map[string]string{"message": msg})
 }

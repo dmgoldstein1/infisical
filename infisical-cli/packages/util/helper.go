@@ -3,6 +3,7 @@ package util
 import (
 	"bytes"
 	"crypto/sha256"
+	"crypto/sha512"
 	"encoding/base64"
 	"encoding/hex"
 	"fmt"
@@ -681,7 +682,9 @@ func GenerateETagFromSecrets(secrets []models.SingleEnvironmentVariable) string 
 		content = append(content, []byte(secret.Value)...)
 	}
 
-	hash := sha256.Sum256(content)
+	// SHA-512/256 change fingerprint, not a password hash: both sides of the
+	// comparison call this function, so the digest only needs collision resistance.
+	hash := sha512.Sum512_256(content)
 	return fmt.Sprintf(`"%s"`, hex.EncodeToString(hash[:]))
 }
 

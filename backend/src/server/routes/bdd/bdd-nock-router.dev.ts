@@ -2,7 +2,7 @@ import type { Definition } from "nock";
 import { z } from "zod";
 
 import { getConfig } from "@app/lib/config/env";
-import { ForbiddenRequestError } from "@app/lib/errors";
+import { BadRequestError, ForbiddenRequestError } from "@app/lib/errors";
 import { logger } from "@app/lib/logger";
 import { verifyAuth } from "@app/server/plugins/auth/verify-auth";
 import { AuthMode } from "@app/services/auth/auth-type";
@@ -47,13 +47,20 @@ export const registerBddNockRouter = async (server: FastifyZodProvider) => {
       logger.info(definitions, "Defining nock");
       const processedDefinitions = definitions.map((definition: unknown) => {
         const { path, ...rest } = definition as Definition;
-        return {
-          ...rest,
-          path:
-            path !== undefined && typeof path === "string"
-              ? path
-              : new RegExp((path as unknown as { regex: string }).regex ?? "")
-        } as Definition;
+        if (path !== undefined && typeof path === "string") {
+          return { ...rest, path } as Definition;
+        }
+        const raw = (path as unknown as { regex?: unknown })?.regex ?? "";
+        if (typeof raw !== "string" || raw.length === 0 || raw.length > 500) {
+          throw new BadRequestError({ message: "Invalid nock path regex" });
+        }
+        let regex: RegExp;
+        try {
+          regex = new RegExp(raw);
+        } catch {
+          throw new BadRequestError({ message: "Invalid nock path regex" });
+        }
+        return { ...rest, path: regex } as Definition;
       });
 
       const nock = await importNock();

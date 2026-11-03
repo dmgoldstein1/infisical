@@ -143,8 +143,19 @@ func alterPasswordStatement(params sqlRotateParams, targetUsername, sessionUsern
 	if err := validateOracleRotateParams(params); err != nil {
 		return "", err
 	}
+	// Oracle DDL takes no bind parameters, so identifiers and secrets are
+	// quoted into the statement: re-assert the no-quote invariant and bound
+	// lengths here, immediately before Exec.
 	if strings.Contains(targetUsername, `"`) {
 		return "", fmt.Errorf("oracle username cannot contain a double quote")
+	}
+	for label, v := range map[string]string{"username": targetUsername, "new password": params.NewPassword, "current password": params.Password} {
+		if len(v) > 4000 {
+			return "", fmt.Errorf("oracle %s exceeds maximum length", label)
+		}
+		if strings.ContainsAny(v, "\r\n\x00") {
+			return "", fmt.Errorf("oracle %s contains an invalid character", label)
+		}
 	}
 
 	stmt := fmt.Sprintf(`ALTER USER "%s" IDENTIFIED BY "%s"`, targetUsername, params.NewPassword)

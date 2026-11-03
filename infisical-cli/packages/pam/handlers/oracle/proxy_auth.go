@@ -452,6 +452,9 @@ func rewriteAuthRequestUser(payload []byte, expectedSubOp byte, newUser string) 
 }
 
 func rewriteAuthRequestUserWithFraming(payload []byte, expectedSubOp byte, newUser string, consumeExtraFraming bool) ([]byte, error) {
+	if len(newUser) == 0 || len(newUser) > 128 {
+		return nil, fmt.Errorf("injected username has invalid length %d", len(newUser))
+	}
 	r := NewTTCReader(payload)
 	op, err := r.GetByte()
 	if err != nil {
@@ -558,6 +561,9 @@ func rewriteAuthRequestUserWithFraming(payload []byte, expectedSubOp byte, newUs
 }
 
 func rewriteConnectServiceName(pkt []byte, newName string) []byte {
+	if len(newName) == 0 || len(newName) > 1024 {
+		return pkt
+	}
 	marker := []byte("SERVICE_NAME=")
 	idx := bytes.Index(pkt, marker)
 	if idx < 0 {

@@ -1,88 +1,93 @@
 /* eslint-disable */
 import promptSync from "prompt-sync";
-import { execSync } from "child_process";
+import { execFileSync } from "child_process";
 import path from "path";
-import { existsSync } from "fs";
+import { existsSync, writeFileSync } from "fs";
 
 const prompt = promptSync({
   sigint: true
 });
 
-const sanitizeInputParam = (value: string) => {
-  // Escape double quotes and wrap the entire value in double quotes
-  if (value) {
-    return `"${value.replace(/"/g, '\\"')}"`;
-  }
-  return '""';
+// Raw operator input: never interpolated into a shell command. Values reach
+// pg_dump/pg_restore/psql via argv arrays and the PG* environment, never a shell.
+const ask = (question: string, fallback?: string) => {
+  const answer = (prompt(question) ?? "").trim();
+  if (!answer && fallback !== undefined) return fallback;
+  return answer;
 };
 
-const exportDb = () => {
-  const exportHost = sanitizeInputParam(prompt("Enter your Postgres Host to migrate from: "));
-  const exportPort = sanitizeInputParam(
-    prompt("Enter your Postgres Port to migrate from [Default = 5432]: ") ?? "5432"
-  );
-  const exportUser = sanitizeInputParam(
-    prompt("Enter your Postgres User to migrate from: [Default = infisical]: ") ?? "infisical"
-  );
-  const exportPassword = sanitizeInputParam(prompt("Enter your Postgres Password to migrate from: "));
-  const exportDatabase = sanitizeInputParam(
-    prompt("Enter your Postgres Database to migrate from [Default = infisical]: ") ?? "infisical"
-  );
+const assertPort = (port: string) => {
+  if (!/^\d{1,5}$/.test(port)) throw new Error("Invalid port: must be numeric");
+};
 
-  // we do not include the audit_log and secret_sharing entries
-  execSync(
-    `PGDATABASE=${exportDatabase} PGPASSWORD=${exportPassword} PGHOST=${exportHost} PGPORT=${exportPort} PGUSER=${exportUser} pg_dump -Fc infisical --exclude-table-data="secret_sharing" --exclude-table-data="audit_log*" > ${path.join(
-      __dirname,
-      "../src/db/backup.dump"
-    )}`,
-    { stdio: "inherit" }
+const assertUuid = (id: string) => {
+  // UUID charset ([0-9a-f-]) carries no shell or SQL metacharacters, so the
+  // validated value below is safe to embed in a fixed SQL template.
+  if (!/^[0-9a-f-]{36}$/i.test(id)) throw new Error("Organization ID must be a UUID");
+};
+
+const pgEnv = (host: string, port: string, user: string, password: string, database: string) => ({
+  ...process.env,
+  PGHOST: host,
+  PGPORT: port,
+  PGUSER: user,
+  PGPASSWORD: password,
+  PGDATABASE: database
+});
+
+const exportDb = () => {
+  const exportHost = ask("Enter your Postgres Host to migrate from: ");
+  const exportPort = ask("Enter your Postgres Port to migrate from [Default = 5432]: ", "5432");
+  const exportUser = ask("Enter your Postgres User to migrate from: [Default = infisical]: ", "infisical");
+  const exportPassword = ask("Enter your Postgres Password to migrate from: ");
+  const exportDatabase = ask("Enter your Postgres Database to migrate from [Default = infisical]: ", "infisical");
+  assertPort(exportPort);
+
+  const dump = execFileSync(
+    "pg_dump",
+    ["-Fc", "infisical", "--exclude-table-data=secret_sharing", "--exclude-table-data=audit_log*"],
+    {
+      stdio: ["inherit", "pipe", "inherit"],
+      env: pgEnv(exportHost, exportPort, exportUser, exportPassword, exportDatabase),
+      maxBuffer: 1024 * 1024 * 4096
+    }
   );
+  writeFileSync(path.join(__dirname, "../src/db/backup.dump"), dump);
 };
 
 const importDbForOrg = () => {
-  const importHost = sanitizeInputParam(prompt("Enter your Postgres Host to migrate to: "));
-  const importPort = sanitizeInputParam(prompt("Enter your Postgres Port to migrate to [Default = 5432]: ") ?? "5432");
-  const importUser = sanitizeInputParam(
-    prompt("Enter your Postgres User to migrate to: [Default = infisical]: ") ?? "infisical"
-  );
-  const importPassword = sanitizeInputParam(prompt("Enter your Postgres Password to migrate to: "));
-  const importDatabase = sanitizeInputParam(
-    prompt("Enter your Postgres Database to migrate to [Default = infisical]: ") ?? "infisical"
-  );
-  const orgId = sanitizeInputParam(prompt("Enter the organization ID to migrate: "));
+  const importHost = ask("Enter your Postgres Host to migrate to: ");
+  const importPort = ask("Enter your Postgres Port to migrate to [Default = 5432]: ", "5432");
+  const importUser = ask("Enter your Postgres User to migrate to: [Default = infisical]: ", "infisical");
+  const importPassword = ask("Enter your Postgres Password to migrate to: ");
+  const importDatabase = ask("Enter your Postgres Database to migrate to [Default = infisical]: ", "infisical");
+  const orgId = ask("Enter the organization ID to migrate: ");
+  assertPort(importPort);
+  assertUuid(orgId);
 
   if (!existsSync(path.join(__dirname, "../src/db/backup.dump"))) {
     console.log("File not found, please export the database first.");
     return;
   }
 
-  execSync(
-    `PGDATABASE=${importDatabase} PGPASSWORD=${importPassword} PGHOST=${importHost} PGPORT=${importPort} PGUSER=${importUser} pg_restore -d ${importDatabase} --verbose ${path.join(
-      __dirname,
-      "../src/db/backup.dump"
-    )}`,
-    { maxBuffer: 1024 * 1024 * 4096 }
-  );
+  const env = pgEnv(importHost, importPort, importUser, importPassword, importDatabase);
+  const dumpPath = path.join(__dirname, "../src/db/backup.dump");
+  execFileSync("pg_restore", ["-d", importDatabase, "--verbose", dumpPath], {
+    maxBuffer: 1024 * 1024 * 4096,
+    stdio: "inherit",
+    env
+  });
 
-  execSync(
-    `PGDATABASE=${importDatabase} PGPASSWORD=${importPassword} PGHOST=${importHost} PGPORT=${importPort} PGUSER=${importUser} psql -c "DELETE FROM public.organizations WHERE id != '${orgId}'"`
-  );
-
-  // delete global/instance-level resources not relevant to the organization to migrate
-  // users
-  execSync(
-    `PGDATABASE=${importDatabase} PGPASSWORD=${importPassword} PGHOST=${importHost} PGPORT=${importPort} PGUSER=${importUser} psql -c 'DELETE FROM users WHERE users.id NOT IN (SELECT org_memberships."userId" FROM org_memberships)'`
-  );
-
-  // identities
-  execSync(
-    `PGDATABASE=${importDatabase} PGPASSWORD=${importPassword} PGHOST=${importHost} PGPORT=${importPort} PGUSER=${importUser} psql -c 'DELETE FROM identities WHERE id NOT IN (SELECT "identityId" FROM identity_org_memberships)'`
-  );
-
-  // reset slack configuration in superAdmin
-  execSync(
-    `PGDATABASE=${importDatabase} PGPASSWORD=${importPassword} PGHOST=${importHost} PGPORT=${importPort} PGUSER=${importUser} psql -c 'UPDATE super_admin SET "encryptedSlackClientId" = null, "encryptedSlackClientSecret" = null'`
-  );
+  // Fixed SQL templates; the only variable (orgId) is UUID-validated above.
+  const statements = [
+    `DELETE FROM public.organizations WHERE id != '${orgId}'`,
+    'DELETE FROM users WHERE users.id NOT IN (SELECT org_memberships."userId" FROM org_memberships)',
+    'DELETE FROM identities WHERE id NOT IN (SELECT "identityId" FROM identity_org_memberships)',
+    'UPDATE super_admin SET "encryptedSlackClientId" = null, "encryptedSlackClientSecret" = null'
+  ];
+  for (const statement of statements) {
+    execFileSync("psql", ["-c", statement], { stdio: "inherit", env });
+  }
 
   console.log("Organization migrated successfully.");
 };

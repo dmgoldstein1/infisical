@@ -48,6 +48,18 @@ type limitedWriter struct {
 	n int
 }
 
+// redactedSessionHeaders copies h for audit logging with credential-bearing
+// headers replaced. The forwarded request keeps the originals.
+func redactedSessionHeaders(h http.Header) http.Header {
+	out := h.Clone()
+	for _, k := range []string{"Authorization", "Proxy-Authorization", "Cookie", "Set-Cookie", "X-Vault-Token", "X-Api-Key"} {
+		if _, ok := out[http.CanonicalHeaderKey(k)]; ok {
+			out[http.CanonicalHeaderKey(k)] = []string{"[redacted]"}
+		}
+	}
+	return out
+}
+
 func (lw *limitedWriter) Write(p []byte) (int, error) {
 	if lw.n <= 0 {
 		return len(p), nil
@@ -310,7 +322,7 @@ func (p *AzureProxy) forward(writer io.Writer, req *http.Request, client *http.C
 			EventType: session.HttpEventRequest,
 			URL:       req.URL.String(),
 			Method:    req.Method,
-			Headers:   req.Header,
+			Headers:   redactedSessionHeaders(req.Header),
 			Body:      loggedReqBody,
 		}); err != nil {
 			l.Error().Err(err).Msg("Failed to log HTTP request event")

@@ -1855,10 +1855,11 @@ func (s *GitHub) scanURL(ctx context.Context, client *github.Client, rawURL stri
 
 	switch parsed.Resource {
 	case "issue":
-		num, err := strconv.Atoi(parsed.ID)
+		num64, err := strconv.ParseInt(parsed.ID, 10, 32)
 		if err != nil {
 			return fmt.Errorf("invalid issue number %q", parsed.ID)
 		}
+		num := int(num64)
 		var q ghSingleIssueQuery
 		vars := map[string]any{
 			"owner": githubv4.String(owner), "repo": githubv4.String(repo),
@@ -1871,10 +1872,11 @@ func (s *GitHub) scanURL(ctx context.Context, client *github.Client, rawURL stri
 		return s.emitIssueAndComments(ctx, owner, repo, q.Repository.Issue, &dummy, yield)
 
 	case "pr":
-		num, err := strconv.Atoi(parsed.ID)
+		num64, err := strconv.ParseInt(parsed.ID, 10, 32)
 		if err != nil {
 			return fmt.Errorf("invalid PR number %q", parsed.ID)
 		}
+		num := int(num64)
 		var q ghSinglePRQuery
 		vars := map[string]any{
 			"owner": githubv4.String(owner), "repo": githubv4.String(repo),
@@ -1888,10 +1890,11 @@ func (s *GitHub) scanURL(ctx context.Context, client *github.Client, rawURL stri
 		return s.emitPRAndComments(ctx, owner, repo, q.Repository.PullRequest, &dummy, yield)
 
 	case "discussion":
-		num, err := strconv.Atoi(parsed.ID)
+		num64, err := strconv.ParseInt(parsed.ID, 10, 32)
 		if err != nil {
 			return fmt.Errorf("invalid discussion number %q", parsed.ID)
 		}
+		num := int(num64)
 		var q ghSingleDiscussionQuery
 		vars := map[string]any{
 			"owner": githubv4.String(owner), "repo": githubv4.String(repo),

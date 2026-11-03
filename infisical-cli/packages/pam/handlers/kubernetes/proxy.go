@@ -44,6 +44,18 @@ func NewKubernetesProxy(config KubernetesProxyConfig) *KubernetesProxy {
 	return &KubernetesProxy{config: config}
 }
 
+// redactedSessionHeaders copies h for audit logging with credential-bearing
+// headers replaced. The forwarded request keeps the originals.
+func redactedSessionHeaders(h http.Header) http.Header {
+	out := h.Clone()
+	for _, k := range []string{"Authorization", "Proxy-Authorization", "Cookie", "Set-Cookie", "X-Vault-Token", "X-Api-Key"} {
+		if _, ok := out[http.CanonicalHeaderKey(k)]; ok {
+			out[http.CanonicalHeaderKey(k)] = []string{"[redacted]"}
+		}
+	}
+	return out
+}
+
 // injectAuthHeaders sets the appropriate auth headers based on the configured auth method.
 // For service-account-token: injects the stored Bearer token.
 // For gateway-kubernetes-auth: reads the gateway pod's own token (fresh each call) and sets
@@ -169,9 +181,8 @@ func (p *KubernetesProxy) HandleConnection(ctx context.Context, clientConn net.C
 			EventType: session.HttpEventRequest,
 			URL:       req.URL.String(),
 			Method:    req.Method,
-			// TODO: filter out sensitive headers?
-			Headers: req.Header,
-			Body:    reqBody,
+			Headers:   redactedSessionHeaders(req.Header),
+			Body:      reqBody,
 		})
 		if err != nil {
 			l.Error().Err(err).Msg("Failed to log HTTP request event")

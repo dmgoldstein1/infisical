@@ -32,8 +32,9 @@ export const PersonalSettingsPage = () => {
             Manage your profile, authentication, and active sessions.
           </p>
         </div>
-        {!window.location.origin.includes("https://app.infisical.com") &&
-          !window.location.origin.includes("https://gamma.infisical.com") && <WishForm />}
+        {!["app.infisical.com", "gamma.infisical.com"].includes(window.location.hostname) && (
+          <WishForm />
+        )}
       </header>
       <PersonalTabGroup
         selectedTab={selectedTab}

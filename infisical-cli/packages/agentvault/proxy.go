@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"html"
 	"io"
 	"net"
 	"net/http"
@@ -215,7 +216,7 @@ func (ps *proxyServer) handleConnect(w http.ResponseWriter, r *http.Request) {
 
 	hostname, port, err := parseConnectTarget(r.Host)
 	if err != nil {
-		http.Error(w, fmt.Sprintf("invalid CONNECT target %q", r.Host), http.StatusBadRequest)
+		http.Error(w, fmt.Sprintf("invalid CONNECT target %q", html.EscapeString(r.Host)), http.StatusBadRequest)
 		return
 	}
 
@@ -340,7 +341,7 @@ func (ps *proxyServer) handlePlainForward(w http.ResponseWriter, r *http.Request
 
 	hostname, port, err := parseForwardTarget(r.URL.Host)
 	if err != nil {
-		http.Error(w, fmt.Sprintf("invalid target %q", r.URL.Host), http.StatusBadRequest)
+		http.Error(w, fmt.Sprintf("invalid target %q", html.EscapeString(r.URL.Host)), http.StatusBadRequest)
 		return
 	}
 

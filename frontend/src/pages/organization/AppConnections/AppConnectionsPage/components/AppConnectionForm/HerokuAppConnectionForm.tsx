@@ -116,7 +116,7 @@ export const HerokuConnectionForm = ({ appConnection, onSubmit: formSubmit, proj
           break;
 
         case HerokuConnectionMethod.OAuth:
-          if (!oauthClientId) {
+          if (!oauthClientId || !/^[A-Za-z0-9-]+$/.test(oauthClientId)) {
             return;
           }
           setIsRedirecting(true);

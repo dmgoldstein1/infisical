@@ -102,7 +102,9 @@ export const GitHubRadarConnectionForm = ({ appConnection, projectId }: Props) =
     switch (formData.method) {
       case GitHubRadarConnectionMethod.App:
         window.location.assign(
-          `https://github.com/apps/${appClientSlug}/installations/new?state=${state}`
+          `https://github.com/apps/${encodeURIComponent(
+            appClientSlug ?? ""
+          )}/installations/new?state=${encodeURIComponent(state)}`
         );
         break;
       default:

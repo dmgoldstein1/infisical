@@ -98,11 +98,21 @@ func (h *ErrorHandler) writeHTTPError(ctx context.Context, w http.ResponseWriter
 	_ = json.NewEncoder(w).Encode(resp)
 }
 
+// validationFieldNames returns only the field names from validation errors,
+// omitting the rejected values which may carry secrets.
+func validationFieldNames(validationErrors runtime.ValidationErrors) []string {
+	fields := make([]string, 0, len(validationErrors))
+	for _, ve := range validationErrors {
+		fields = append(fields, ve.Field)
+	}
+	return fields
+}
+
 // writeValidationError writes validation errors as a ValidationError response.
 func (h *ErrorHandler) writeValidationError(ctx context.Context, w http.ResponseWriter, reqID string, validationErrors runtime.ValidationErrors) {
 	h.Logger.WarnContext(ctx, "validation error",
 		slog.String("reqId", reqID),
-		slog.Any("errors", validationErrors),
+		slog.Any("fields", validationFieldNames(validationErrors)),
 	)
 
 	fieldErrors := make([]FieldError, 0, len(validationErrors))
@@ -154,7 +164,7 @@ func (h *ErrorHandler) writeClientError(ctx context.Context, w http.ResponseWrit
 func (h *ErrorHandler) writeInternalError(ctx context.Context, w http.ResponseWriter, reqID string, err error) {
 	h.Logger.ErrorContext(ctx, "unhandled error",
 		slog.String("reqId", reqID),
-		slog.Any("error", err),
+		slog.String("error", "internal error (details redacted)"),
 	)
 
 	resp := Error{

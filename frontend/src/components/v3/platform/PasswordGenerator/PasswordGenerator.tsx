@@ -57,6 +57,17 @@ const getValueConstraints = (rule: TSecretValidationRule): TValueConstraints | u
 const hasValueConstraints = (rule: TSecretValidationRule): boolean =>
   Object.values(getValueConstraints(rule) ?? {}).some((value) => value !== undefined);
 
+const uniform = (range: number): number => {
+  // Rejection sampling: modulo on 2^32 output is biased unless range divides it.
+  const space = 2 ** 32;
+  const limit = space - (space % range);
+  const sample = new Uint32Array(1);
+  do {
+    crypto.getRandomValues(sample);
+  } while (sample[0] >= limit);
+  return sample[0] % range;
+};
+
 const generateFromConstraints = (constraints: TValueConstraints): string => {
   const prefix = constraints.requiredPrefix ?? "";
   const suffix = constraints.requiredSuffix ?? "";
@@ -85,15 +96,11 @@ const generateFromConstraints = (constraints: TValueConstraints): string => {
     const targetMax = Math.max(maxLength - fixedLength, 1);
     const lengthRange = Math.max(targetMax - targetMin, 0);
     const randomLength =
-      lengthRange > 0
-        ? targetMin + (crypto.getRandomValues(new Uint32Array(1))[0] % (lengthRange + 1))
-        : Math.max(targetMin, 1);
+      lengthRange > 0 ? targetMin + uniform(lengthRange + 1) : Math.max(targetMin, 1);
 
     const charset = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_.~!*";
-    const randomBytes = new Uint32Array(randomLength);
-    crypto.getRandomValues(randomBytes);
     for (let i = 0; i < randomLength; i += 1) {
-      middle += charset[randomBytes[i] % charset.length];
+      middle += charset[uniform(charset.length)];
     }
   }
 
@@ -268,11 +275,9 @@ export const PasswordGenerator = ({
 
     if (availableChars === "") availableChars = charset.lowercase + charset.numbers;
 
-    const randomBytes = new Uint32Array(passwordOptions.length);
-    crypto.getRandomValues(randomBytes);
     let newPassword = "";
     for (let i = 0; i < passwordOptions.length; i += 1) {
-      newPassword += availableChars[randomBytes[i] % availableChars.length];
+      newPassword += availableChars[uniform(availableChars.length)];
     }
 
     return newPassword;

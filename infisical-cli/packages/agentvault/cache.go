@@ -3,6 +3,8 @@ package agentvault
 import (
 	"sync/atomic"
 
+	"crypto/hmac"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -76,10 +78,19 @@ type sessionEntry struct {
 	fetchedAt  time.Time
 }
 
-// The map key is the sha256 of the token, never the token itself, so a heap dump yields no live credential.
+// sessionKeyMAC is a per-process key so the session map index is a keyed MAC,
+// never the token itself, so a heap dump yields no live credential.
+var sessionKeyMAC = func() []byte {
+	k := make([]byte, 32)
+	_, _ = rand.Read(k)
+	return k
+}()
+
+// The map key is the HMAC of the token, never the token itself, so a heap dump yields no live credential.
 func sessionKey(token string) string {
-	sum := sha256.Sum256([]byte(token))
-	return hex.EncodeToString(sum[:])
+	mac := hmac.New(sha256.New, sessionKeyMAC)
+	mac.Write([]byte(token))
+	return hex.EncodeToString(mac.Sum(nil))
 }
 
 type sessionResolver interface {

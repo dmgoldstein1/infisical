@@ -967,8 +967,30 @@ export const AWS_REGIONS = [
 export const CSRF_TOKEN_STORAGE_KEY = "latestCSRFToken";
 export const GITHUB_CONNECTION_FORM_STORAGE_KEY = "githubConnectionFormData";
 
-export const buildGitHubHostUrl = (host?: string | null) =>
-  host && host.trim().length > 0 ? `https://${host.trim()}` : "https://github.com";
+// Allowlist for the Microsoft identity-platform tenant path segment: a tenant
+// id (UUID), a verified domain, or one of the common pseudo-tenants. Anything
+// else falls back to "common" so free-text input cannot break out of the URL
+// path into query/fragment territory.
+export const sanitizeTenantSegment = (tenantId?: string | null) => {
+  const raw = (tenantId ?? "").trim();
+  if (raw !== "" && /^[A-Za-z0-9.-]{1,255}$/.test(raw)) return raw;
+  return "common";
+};
+
+// Allowlist for a user-supplied OAuth host: bare hostname with optional port,
+// no path, query, fragment, credentials or scheme.
+export const sanitizeOauthHost = (host?: string | null) => {
+  const raw = (host ?? "").trim().toLowerCase();
+  if (raw !== "" && /^[a-z0-9.-]+(?::\d{1,5})?$/.test(raw)) return raw;
+  return "";
+};
+
+export const buildGitHubHostUrl = (host?: string | null) => {
+  // Reject hosts carrying a path, query, fragment, credentials or scheme so a
+  // free-text host input cannot redirect the OAuth/install flow off github.com.
+  const clean = sanitizeOauthHost(host);
+  return clean !== "" ? `https://${clean}` : "https://github.com";
+};
 
 export const buildGitHubAppUrl = (
   slug: string,
@@ -981,7 +1003,8 @@ export const buildGitHubAppInstallUrl = (
   state: string,
   host?: string | null,
   instanceType?: "cloud" | "server"
-) => `${buildGitHubAppUrl(slug, host, instanceType)}/installations/new?state=${state}`;
+) =>
+  `${buildGitHubAppUrl(encodeURIComponent(slug), host, instanceType)}/installations/new?state=${encodeURIComponent(state)}`;
 
 export const generateCsrfToken = () =>
   Array.from(crypto.getRandomValues(new Uint8Array(16)))

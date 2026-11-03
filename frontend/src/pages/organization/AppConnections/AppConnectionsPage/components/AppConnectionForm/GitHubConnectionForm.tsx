@@ -379,7 +379,11 @@ export const GitHubConnectionForm = ({ appConnection, projectId, onSubmit }: Pro
       case GitHubConnectionMethod.OAuth:
         storeConnectionFormData(formData, installState);
         window.location.assign(
-          `${githubHost}/login/oauth/authorize?client_id=${oauthClientId}&response_type=code&scope=repo,admin:org&redirect_uri=${window.location.origin}/organization/app-connections/github/oauth/callback&state=${installState}`
+          `${githubHost}/login/oauth/authorize?client_id=${encodeURIComponent(
+            oauthClientId ?? ""
+          )}&response_type=code&scope=repo,admin:org&redirect_uri=${window.location.origin}/organization/app-connections/github/oauth/callback&state=${encodeURIComponent(
+            installState
+          )}`
         );
         break;
       default:

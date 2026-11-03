@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"html"
 	"io"
 	"net"
 	"net/http"
@@ -363,7 +364,7 @@ func (ps *proxyServer) handleConnect(w http.ResponseWriter, r *http.Request) {
 
 	hostname, port, err := parseConnectTarget(r.Host)
 	if err != nil {
-		http.Error(w, fmt.Sprintf("invalid CONNECT target %q", r.Host), http.StatusBadRequest)
+		http.Error(w, fmt.Sprintf("invalid CONNECT target %q", html.EscapeString(r.Host)), http.StatusBadRequest)
 		return
 	}
 
@@ -511,7 +512,7 @@ func (ps *proxyServer) forwardHTTP(w http.ResponseWriter, r *http.Request, schem
 
 	if err != nil {
 		if !canceled {
-			http.Error(w, err.Error(), status)
+			http.Error(w, html.EscapeString(err.Error()), status)
 		}
 		return
 	}

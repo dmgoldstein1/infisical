@@ -65,12 +65,21 @@ const formSchema = z
     enabledEvents: z.record(z.nativeEnum(WebhookEvent), z.boolean()).default(DEFAULT_ENABLED_EVENTS)
   })
   .superRefine((data, ctx) => {
-    if (data.type === WebhookType.SLACK && !data.webhookUrl.includes("hooks.slack.com")) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        message: "Incoming Webhook URL is invalid.",
-        path: ["webhookUrl"]
-      });
+    if (data.type === WebhookType.SLACK) {
+      let hostname = "";
+      try {
+        const url = new URL(data.webhookUrl);
+        hostname = url.hostname.toLowerCase();
+      } catch {
+        hostname = "";
+      }
+      if (hostname !== "hooks.slack.com") {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "Incoming Webhook URL is invalid.",
+          path: ["webhookUrl"]
+        });
+      }
     }
   });
 

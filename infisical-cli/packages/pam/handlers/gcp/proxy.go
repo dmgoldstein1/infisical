@@ -247,6 +247,29 @@ func (p *GCPProxy) handleConnect(ctx context.Context, clientConn net.Conn, conne
 	}
 }
 
+// redactedLogHeaders returns a copy of h with credential-bearing header values
+// replaced, so audit logs never persist secrets (e.g. Authorization bearer
+// tokens) in clear text. The proxied request itself is forwarded unmodified.
+func redactedLogHeaders(h http.Header) http.Header {
+	if len(h) == 0 {
+		return h
+	}
+	out := make(http.Header, len(h))
+	for k, v := range h {
+		switch strings.ToLower(k) {
+		case "authorization", "proxy-authorization", "cookie", "set-cookie":
+			red := make([]string, len(v))
+			for i := range v {
+				red[i] = "[redacted]"
+			}
+			out[k] = red
+		default:
+			out[k] = v
+		}
+	}
+	return out
+}
+
 func (p *GCPProxy) handleRequest(_ context.Context, writer io.Writer, req *http.Request, client *http.Client, l zerolog.Logger) error {
 	requestId := uuid.New()
 	l.Info().
@@ -281,7 +304,7 @@ func (p *GCPProxy) handleRequest(_ context.Context, writer io.Writer, req *http.
 		EventType: session.HttpEventRequest,
 		URL:       req.URL.String(),
 		Method:    req.Method,
-		Headers:   req.Header,
+		Headers:   redactedLogHeaders(req.Header),
 		Body:      loggedReqBody,
 	}); err != nil {
 		l.Error().Err(err).Msg("Failed to log HTTP request event")

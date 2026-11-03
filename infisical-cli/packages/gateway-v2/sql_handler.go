@@ -136,7 +136,30 @@ func validateOracleRotateParams(params sqlRotateParams) error {
 			return fmt.Errorf("oracle %s cannot contain a double quote", label)
 		}
 	}
+	// The username is interpolated into ALTER USER as a double-quoted
+	// identifier (Oracle DDL takes no bind parameters for object names), so
+	// the double-quote rejection above is the breakout guard. Control
+	// characters are never legitimate in an Oracle username and are rejected
+	// as well so they cannot smuggle statement or log confusion.
+	if !validOracleUsername(params.TargetUsername) {
+		return fmt.Errorf("oracle username contains characters outside the allowed set")
+	}
 	return nil
+}
+
+// validOracleUsername reports whether s is safe to interpolate as a
+// double-quoted Oracle identifier: no double quotes (the identifier escape)
+// and no ASCII control characters.
+func validOracleUsername(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, r := range s {
+		if r == '"' || r < 0x20 || r == 0x7f {
+			return false
+		}
+	}
+	return true
 }
 
 func alterPasswordStatement(params sqlRotateParams, targetUsername, sessionUsername string, exact bool) (string, error) {
@@ -145,6 +168,9 @@ func alterPasswordStatement(params sqlRotateParams, targetUsername, sessionUsern
 	}
 	if strings.Contains(targetUsername, `"`) {
 		return "", fmt.Errorf("oracle username cannot contain a double quote")
+	}
+	if !validOracleUsername(targetUsername) {
+		return "", fmt.Errorf("oracle username contains characters outside the allowed set")
 	}
 
 	stmt := fmt.Sprintf(`ALTER USER "%s" IDENTIFIED BY "%s"`, targetUsername, params.NewPassword)

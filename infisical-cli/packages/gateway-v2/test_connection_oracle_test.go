@@ -251,3 +251,27 @@ func TestAlterPasswordStatementKeepsCaseDistinctAccountsApart(t *testing.T) {
 		t.Fatalf("two accounts differing only in case are not the same account: %q", got)
 	}
 }
+func TestAlterPasswordStatementRejectsInjectionBreakout(t *testing.T) {
+	base := sqlRotateParams{TargetUsername: "APP_USER", NewPassword: "NewPw_123"}
+	base.Dialect = "oracle"
+	base.Username = "APP_USER"
+	base.Password = "OldPw_1"
+
+	for _, evil := range []string{
+		`APP_USER" IDENTIFIED BY "x`,
+		"APP_USER\nIDENTIFIED BY \"x",
+		"APP_USER\r\n--",
+		"APP_US\x00ER",
+		"",
+	} {
+		p := base
+		p.TargetUsername = evil
+		stmt, err := alterPasswordStatement(p, p.TargetUsername, p.Username, len(evil) > 0)
+		if err == nil {
+			t.Fatalf("username %q must be rejected, got statement %q", evil, stmt)
+		}
+		if err == nil && strings.Count(stmt, `"`) > 4 {
+			t.Fatalf("statement carries injected quoting: %q", stmt)
+		}
+	}
+}

@@ -126,7 +126,7 @@ const startFakeRelay = async ({
   const live = new Set<tls.TLSSocket>();
 
   const server = tls.createServer(
-    { key: keyPem, cert: serverCert, ca: caPem, requestCert: true, rejectUnauthorized: false },
+    { key: keyPem, cert: serverCert, ca: caPem, requestCert: true, rejectUnauthorized: true },
     (outer) => {
       live.add(outer);
       outer.on("close", () => live.delete(outer));
@@ -136,7 +136,7 @@ const startFakeRelay = async ({
         cert: gatewayCertificate?.cert ?? gatewayCert,
         ca: caPem,
         requestCert: true,
-        rejectUnauthorized: false,
+        rejectUnauthorized: true,
         ALPNProtocols: ["infisical-tcp-proxy"]
       });
       inner.on("secure", () => {

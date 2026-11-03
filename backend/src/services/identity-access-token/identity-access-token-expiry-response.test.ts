@@ -21,11 +21,11 @@ describe("expired-token response", () => {
 
   beforeAll(async () => {
     await server.register(fastifyErrHandler);
-    server.get("/recheck", async () => {
+    server.get("/recheck", { config: { rateLimit: { max: 100, timeWindow: "1 minute" } } }, async () => {
       assertJwtNotExpired({ exp: NOW, nowSeconds: NOW });
       return {};
     });
-    server.get("/verify", async () => {
+    server.get("/verify", { config: { rateLimit: { max: 100, timeWindow: "1 minute" } } }, async () => {
       const token = jwt.sign({ exp: NOW }, "secret");
       jwt.verify(token, "secret");
       return {};

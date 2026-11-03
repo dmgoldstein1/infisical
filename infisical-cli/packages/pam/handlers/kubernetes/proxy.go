@@ -163,15 +163,24 @@ func (p *KubernetesProxy) HandleConnection(ctx context.Context, clientConn net.C
 			}
 			return err
 		}
+		// Cap what reaches the audit log at 1 MiB like the azure/gcp proxies; the
+		// forwarded request still carries the full body.
+		const maxLogBodySize = 1 << 20
+		loggedReqBody := reqBody
+		if len(loggedReqBody) > maxLogBodySize {
+			loggedReqBody = loggedReqBody[:maxLogBodySize]
+		}
 		err = p.config.SessionLogger.LogHttpEvent(session.HttpEvent{
 			Timestamp: time.Now(),
 			RequestId: requestId.String(),
 			EventType: session.HttpEventRequest,
 			URL:       req.URL.String(),
 			Method:    req.Method,
-			// TODO: filter out sensitive headers?
+			// Credential-carrying headers are redacted inside
+			// EncryptedSessionLogger (see redactSensitiveHeaders), so the raw
+			// header map is safe to hand over here.
 			Headers: req.Header,
-			Body:    reqBody,
+			Body:    loggedReqBody,
 		})
 		if err != nil {
 			l.Error().Err(err).Msg("Failed to log HTTP request event")

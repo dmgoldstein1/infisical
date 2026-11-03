@@ -18,6 +18,10 @@ const sessionLogAADVersion = "v1"
 
 const sessionLogIVBytes = 12
 
+// Upper bound for one encrypted session-log chunk; a larger plaintext is a
+// caller bug, and refusing it keeps the allocation below from overflowing.
+const maxSessionLogChunkBytes = 16 << 20
+
 // Must byte-match frontend sessionLogDecrypt.ts, whose test pins the same vector as session_log_crypto_test.go.
 func buildSessionLogAAD(sessionID, chunkID string) []byte {
 	sum := sha256.Sum256([]byte(fmt.Sprintf("%s|%s|%s", sessionID, chunkID, sessionLogAADVersion)))
@@ -39,6 +43,9 @@ func sealSessionLogWithRand(random io.Reader, key, plaintext, aad []byte) ([]byt
 		return nil, fmt.Errorf("agent-vault: could not build GCM: %w", err)
 	}
 
+	if len(plaintext) > maxSessionLogChunkBytes {
+		return nil, fmt.Errorf("agent-vault: session log chunk exceeds %d bytes", maxSessionLogChunkBytes)
+	}
 	blob := make([]byte, sessionLogIVBytes, sessionLogIVBytes+len(plaintext)+gcm.Overhead())
 	if _, err = io.ReadFull(random, blob); err != nil {
 		return nil, fmt.Errorf("agent-vault: could not read a nonce: %w", err)

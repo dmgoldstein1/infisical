@@ -104,7 +104,11 @@ export const registerAnnouncementRouter = async (server: FastifyZodProvider) => 
         throw new NotFoundError({ message: "Asset not found" });
       }
 
-      const filePath = path.join(BUNDLED_IMAGE_DIR, filename);
+      const baseDir = path.resolve(BUNDLED_IMAGE_DIR);
+      const filePath = path.resolve(baseDir, filename);
+      if (!filePath.startsWith(`${baseDir}${path.sep}`)) {
+        throw new NotFoundError({ message: "Asset not found" });
+      }
       try {
         await stat(filePath);
       } catch {

@@ -423,13 +423,18 @@ const cryptographyFactory = () => {
     };
 
     const createHash = async (password: string, saltRounds: number) => {
+      // Bcrypt work factors below 10 fall to brute force on modern hardware.
+      // Clamp operator-supplied rounds up to the minimum instead of minting
+      // weak hashes; stored hashes carry their own cost so verification of
+      // older hashes is unaffected.
+      const rounds = Math.max(saltRounds, 10);
       if (isFipsModeEnabled()) {
         const hasher = hasherFipsValidated();
 
-        const hash = await hasher.hash(password, saltRounds);
+        const hash = await hasher.hash(password, rounds);
         return hash;
       }
-      const hash = await bcrypt.hash(password, saltRounds);
+      const hash = await bcrypt.hash(password, rounds);
       return hash;
     };
 

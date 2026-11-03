@@ -1,3 +1,5 @@
+import { randomUUID } from "node:crypto";
+
 import { expect, request, test, type Page, type Response } from "@playwright/test";
 
 import { GAMMA_BASE_URL } from "../helpers/constants";
@@ -13,7 +15,7 @@ const TEST_FIRST_NAME = "E2E";
 const TEST_LAST_NAME = "DeactivationTest";
 
 const makeExternalId = (): string => {
-  const runId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const runId = `${Date.now()}-${randomUUID().slice(0, 8)}`;
   return `e2e-deact-${runId}@infisical-e2e.test`;
 };
 

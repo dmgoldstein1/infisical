@@ -21,6 +21,7 @@ import {
 } from "@app/components/v3";
 import { ROUTE_PATHS } from "@app/const/routes";
 import { useOrganization, useProject } from "@app/context";
+import { isAzureVaultUrl } from "@app/helpers/safeRedirect";
 import { useCreateIntegration } from "@app/hooks/api";
 import { useGetIntegrationAuthById } from "@app/hooks/api/integrationAuth";
 import { IntegrationSyncBehavior } from "@app/hooks/api/integrations/types";
@@ -76,7 +77,7 @@ export const AzureKeyVaultConfigurePage = () => {
         return;
       }
 
-      if (!vaultBaseUrl.startsWith("https://") || !vaultBaseUrl.endsWith("vault.azure.net")) {
+      if (!isAzureVaultUrl(vaultBaseUrl)) {
         setVaultBaseUrlErrorText("Vault URI must be like https://<vault_name>.vault.azure.net");
         return;
       }

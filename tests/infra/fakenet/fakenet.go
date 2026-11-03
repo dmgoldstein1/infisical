@@ -12,6 +12,8 @@
 package fakenet
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"log"
 	"net/http"
@@ -163,10 +165,8 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func short(key string) string {
-	if len(key) > 12 {
-		return key[:12] + "..."
-	}
-	return key
+	sum := sha256.Sum256([]byte(key))
+	return hex.EncodeToString(sum[:])[:12] + "..."
 }
 
 // scope returns a scope, creating it the first time a credential is seen.

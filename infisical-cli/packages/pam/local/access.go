@@ -967,7 +967,11 @@ func printDatabaseSessionInfo(config AccountConnectionDisplay, folder, account s
 		fmt.Printf("  Username:  %s\n", username)
 	}
 	if config.RequiredPassword != "" {
-		fmt.Printf("  Password:  %s\n", config.RequiredPassword)
+		// RequiredPassword is always the well-known placeholder (e.g. "password"),
+		// never a live credential, so print the constant: the gateway swaps in the
+		// real credential at login time. This keeps even placeholder-shaped values
+		// from flowing from config into process output.
+		fmt.Printf("  Password:  %s\n", oracle.ProxyPasswordPlaceholder)
 	} else {
 		fmt.Printf("  Password:  (not required)\n")
 	}
@@ -981,7 +985,7 @@ func printDatabaseSessionInfo(config AccountConnectionDisplay, folder, account s
 	fmt.Printf("\n")
 	fmt.Printf("  Use your preferred database client (CLI, GUI, or IDE) to connect\n")
 	if config.RequiredPassword != "" {
-		fmt.Printf("  to 127.0.0.1:%d. Type %s literally as the password; the Gateway\n", port, config.RequiredPassword)
+		fmt.Printf("  to 127.0.0.1:%d. Type %s literally as the password; the Gateway\n", port, oracle.ProxyPasswordPlaceholder)
 		fmt.Printf("  swaps in the real credential during login.\n")
 	} else {
 		fmt.Printf("  to 127.0.0.1:%d. No password is needed.\n", port)

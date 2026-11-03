@@ -356,7 +356,14 @@ export const GitHubConnectionForm = ({ appConnection, projectId, onSubmit }: Pro
 
     // generate install state here so the OAuth callback can validate it
     const installState = generateCsrfToken();
-    const githubHost = buildGitHubHostUrl(formData.credentials?.host);
+    let githubHost: string;
+    try {
+      githubHost = buildGitHubHostUrl(formData.credentials?.host);
+    } catch {
+      setIsRedirecting(false);
+      createNotification({ text: "Invalid GitHub host.", type: "error" });
+      return;
+    }
 
     switch (formData.method) {
       case GitHubConnectionMethod.App: {
@@ -366,14 +373,19 @@ export const GitHubConnectionForm = ({ appConnection, projectId, onSubmit }: Pro
         storeConnectionFormData(formData, installState, targetApp?.id ?? undefined, slug);
 
         // Always use GitHub's install flow: the user selects the account + repos on GitHub's own UI,
-        window.location.assign(
-          buildGitHubAppInstallUrl(
-            slug ?? "",
-            installState,
-            formData.credentials?.host,
-            formData.credentials?.instanceType
-          )
-        );
+        try {
+          window.location.assign(
+            buildGitHubAppInstallUrl(
+              slug ?? "",
+              installState,
+              formData.credentials?.host,
+              formData.credentials?.instanceType
+            )
+          );
+        } catch {
+          setIsRedirecting(false);
+          createNotification({ text: "Invalid GitHub app identifier.", type: "error" });
+        }
         break;
       }
       case GitHubConnectionMethod.OAuth:

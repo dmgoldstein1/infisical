@@ -57,6 +57,20 @@ const getValueConstraints = (rule: TSecretValidationRule): TValueConstraints | u
 const hasValueConstraints = (rule: TSecretValidationRule): boolean =>
   Object.values(getValueConstraints(rule) ?? {}).some((value) => value !== undefined);
 
+// Uniform integer in [0, bound) via rejection sampling, so no modulo bias
+// from the 2^32 range of crypto.getRandomValues.
+const secureRandomBelow = (bound: number): number => {
+  const range = 0xffffffff + 1;
+  const limit = range - (range % bound);
+  const sample = new Uint32Array(1);
+  let value: number;
+  do {
+    crypto.getRandomValues(sample);
+    [value] = sample;
+  } while (value >= limit);
+  return value % bound;
+};
+
 const generateFromConstraints = (constraints: TValueConstraints): string => {
   const prefix = constraints.requiredPrefix ?? "";
   const suffix = constraints.requiredSuffix ?? "";
@@ -85,15 +99,11 @@ const generateFromConstraints = (constraints: TValueConstraints): string => {
     const targetMax = Math.max(maxLength - fixedLength, 1);
     const lengthRange = Math.max(targetMax - targetMin, 0);
     const randomLength =
-      lengthRange > 0
-        ? targetMin + (crypto.getRandomValues(new Uint32Array(1))[0] % (lengthRange + 1))
-        : Math.max(targetMin, 1);
+      lengthRange > 0 ? targetMin + secureRandomBelow(lengthRange + 1) : Math.max(targetMin, 1);
 
     const charset = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_.~!*";
-    const randomBytes = new Uint32Array(randomLength);
-    crypto.getRandomValues(randomBytes);
     for (let i = 0; i < randomLength; i += 1) {
-      middle += charset[randomBytes[i] % charset.length];
+      middle += charset[secureRandomBelow(charset.length)];
     }
   }
 

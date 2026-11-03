@@ -7,6 +7,16 @@ import { PageTitle } from "@app/components/PageTitle";
 
 import { PersonalTabGroup } from "./components/PersonalTabGroup";
 
+const WISH_HIDDEN_HOSTS = new Set(["app.infisical.com", "gamma.infisical.com"]);
+
+const isWishHidden = () => {
+  try {
+    return WISH_HIDDEN_HOSTS.has(new URL(window.location.origin).hostname.toLowerCase());
+  } catch {
+    return false;
+  }
+};
+
 export const PersonalSettingsPage = () => {
   const { t } = useTranslation();
   const navigate = useNavigate({ from: "/personal-settings/" });
@@ -32,8 +42,7 @@ export const PersonalSettingsPage = () => {
             Manage your profile, authentication, and active sessions.
           </p>
         </div>
-        {!window.location.origin.includes("https://app.infisical.com") &&
-          !window.location.origin.includes("https://gamma.infisical.com") && <WishForm />}
+        {!isWishHidden() && <WishForm />}
       </header>
       <PersonalTabGroup
         selectedTab={selectedTab}

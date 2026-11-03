@@ -47,13 +47,23 @@ export const registerBddNockRouter = async (server: FastifyZodProvider) => {
       logger.info(definitions, "Defining nock");
       const processedDefinitions = definitions.map((definition: unknown) => {
         const { path, ...rest } = definition as Definition;
-        return {
-          ...rest,
-          path:
-            path !== undefined && typeof path === "string"
-              ? path
-              : new RegExp((path as unknown as { regex: string }).regex ?? "")
-        } as Definition;
+        if (path !== undefined && typeof path === "string") {
+          return { ...rest, path } as Definition;
+        }
+        // Caller-supplied regex source for the dev-only nock harness: cap its
+        // length and reject invalid patterns so a hostile definition cannot
+        // lodge a catastrophic-backtracking expression.
+        const source = (path as unknown as { regex: string } | undefined)?.regex ?? "";
+        if (source.length > 500) {
+          throw new ForbiddenRequestError({ message: "Invalid nock definition" });
+        }
+        let regex: RegExp;
+        try {
+          regex = new RegExp(source);
+        } catch {
+          throw new ForbiddenRequestError({ message: "Invalid nock definition" });
+        }
+        return { ...rest, path: regex } as Definition;
       });
 
       const nock = await importNock();

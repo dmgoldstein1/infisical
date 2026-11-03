@@ -17,6 +17,7 @@ import {
   Input
 } from "@app/components/v3";
 import { useOrganization } from "@app/context";
+import { sanitizeAzureTenantId } from "@app/helpers/safeRedirect";
 import { useScopeVariant } from "@app/hooks";
 import {
   useGetMicrosoftTeamsClientId,
@@ -119,7 +120,9 @@ export const MicrosoftTeamsIntegrationForm = ({ id, onClose, onBack }: Props) =>
         clientId: microsoftTeamsClientId.clientId
       };
 
-      const url = `https://login.microsoftonline.com/${tenantId}/oauth2/v2.0/authorize?
+      const url = `https://login.microsoftonline.com/${encodeURIComponent(
+        sanitizeAzureTenantId(tenantId)
+      )}/oauth2/v2.0/authorize?
       client_id=${microsoftTeamsClientId.clientId}
       &redirect_uri=${state.redirectUri}
       &response_type=code

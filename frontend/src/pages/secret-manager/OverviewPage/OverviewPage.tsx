@@ -286,7 +286,6 @@ import {
   TableEmptyRow,
   TableFilteredEmptyRow
 } from "./components";
-import type { SecretOverviewPageSearch } from "./overviewSearch";
 import {
   AddResourceButtons,
   AddResourceButtonsProps
@@ -309,6 +308,7 @@ import {
   type TableRowActivityChangeHandler,
   type TableRowActivityId
 } from "./components/tableRowActivity";
+import type { SecretOverviewPageSearch } from "./overviewSearch";
 import {
   createOverviewTelemetry,
   observeOverviewRequest,

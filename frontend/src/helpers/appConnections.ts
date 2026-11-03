@@ -12,6 +12,7 @@ import {
   UserIcon
 } from "lucide-react";
 
+import { sanitizeAppSlug, sanitizeCustomHost } from "@app/helpers/safeRedirect";
 import { AppConnection } from "@app/hooks/api/appConnections/enums";
 import {
   Auth0ConnectionMethod,
@@ -967,8 +968,14 @@ export const AWS_REGIONS = [
 export const CSRF_TOKEN_STORAGE_KEY = "latestCSRFToken";
 export const GITHUB_CONNECTION_FORM_STORAGE_KEY = "githubConnectionFormData";
 
-export const buildGitHubHostUrl = (host?: string | null) =>
-  host && host.trim().length > 0 ? `https://${host.trim()}` : "https://github.com";
+export const buildGitHubHostUrl = (host?: string | null) => {
+  try {
+    const clean = sanitizeCustomHost(host);
+    return clean ? `https://${encodeURIComponent(clean)}` : "https://github.com";
+  } catch {
+    return "https://github.com";
+  }
+};
 
 export const buildGitHubAppUrl = (
   slug: string,
@@ -981,7 +988,12 @@ export const buildGitHubAppInstallUrl = (
   state: string,
   host?: string | null,
   instanceType?: "cloud" | "server"
-) => `${buildGitHubAppUrl(slug, host, instanceType)}/installations/new?state=${state}`;
+) =>
+  `${buildGitHubAppUrl(
+    encodeURIComponent(sanitizeAppSlug(slug)),
+    host,
+    instanceType
+  )}/installations/new?state=${encodeURIComponent(state)}`;
 
 export const generateCsrfToken = () =>
   Array.from(crypto.getRandomValues(new Uint8Array(16)))

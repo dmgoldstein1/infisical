@@ -6,6 +6,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"regexp"
 	"strings"
 
 	"github.com/doordash-oss/oapi-codegen-dd/v3/pkg/runtime"
@@ -55,6 +56,15 @@ func (h *ErrorHandler) HandleError(w http.ResponseWriter, r *http.Request, statu
 	h.writeInternalError(ctx, w, reqID, err)
 }
 
+// bearerTokenLogPattern matches credential material that request-derived
+// error text can echo (e.g. a rejected Authorization header value). Error
+// details are still logged, with the credential itself masked.
+var bearerTokenLogPattern = regexp.MustCompile(`(?i)bearer\s+[A-Za-z0-9\-._~+/=]+`)
+
+func redactCredentialsForLog(s string) string {
+	return bearerTokenLogPattern.ReplaceAllString(s, "Bearer [REDACTED]")
+}
+
 // writeHTTPError writes an errutil.Error as JSON response.
 func (h *ErrorHandler) writeHTTPError(ctx context.Context, w http.ResponseWriter, reqID string, httpErr *errutil.Error) {
 	status := httpErr.Status
@@ -100,9 +110,13 @@ func (h *ErrorHandler) writeHTTPError(ctx context.Context, w http.ResponseWriter
 
 // writeValidationError writes validation errors as a ValidationError response.
 func (h *ErrorHandler) writeValidationError(ctx context.Context, w http.ResponseWriter, reqID string, validationErrors runtime.ValidationErrors) {
+	messages := make([]string, 0, len(validationErrors))
+	for _, ve := range validationErrors {
+		messages = append(messages, redactCredentialsForLog(ve.Error()))
+	}
 	h.Logger.WarnContext(ctx, "validation error",
 		slog.String("reqId", reqID),
-		slog.Any("errors", validationErrors),
+		slog.Any("errors", messages),
 	)
 
 	fieldErrors := make([]FieldError, 0, len(validationErrors))
@@ -154,7 +168,7 @@ func (h *ErrorHandler) writeClientError(ctx context.Context, w http.ResponseWrit
 func (h *ErrorHandler) writeInternalError(ctx context.Context, w http.ResponseWriter, reqID string, err error) {
 	h.Logger.ErrorContext(ctx, "unhandled error",
 		slog.String("reqId", reqID),
-		slog.Any("error", err),
+		slog.String("error", redactCredentialsForLog(err.Error())),
 	)
 
 	resp := Error{

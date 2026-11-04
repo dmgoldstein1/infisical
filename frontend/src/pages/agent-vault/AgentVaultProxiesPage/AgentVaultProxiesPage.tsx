@@ -68,8 +68,8 @@ import {
 } from "@app/helpers/userTablePreferences";
 import { useResetPageHelper } from "@app/hooks";
 import {
-  AgentVaultTrafficPolicy,
   fetchAgentVaultProxyCa,
+  isServiceHostsPolicy,
   useDeleteAgentVaultProxy,
   useListAgentVaultProxies,
   useRevokeAgentVaultProxyAccess,

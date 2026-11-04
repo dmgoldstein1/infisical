@@ -120,3 +120,17 @@ func TestTTCReaderRejectsAHostileLength(t *testing.T) {
 		t.Fatal("an over-long read must be rejected")
 	}
 }
+
+func TestRewriteAuthRequestUserRejectsOversizePayload(t *testing.T) {
+	huge := make([]byte, maxOracleRewritePayloadLen+1)
+	if _, err := rewriteAuthRequestUser(huge, AuthSubOpPhaseOne, "WEBTEST"); err == nil {
+		t.Fatal("an oversize auth request payload must be rejected before allocation")
+	}
+}
+
+func TestRewriteConnectServiceNameLeavesOversizePacketAlone(t *testing.T) {
+	huge := append([]byte("(SERVICE_NAME=old)"), bytes.Repeat([]byte("A"), maxOracleRewritePayloadLen)...)
+	if got := rewriteConnectServiceName(huge, "newdb"); !bytes.Equal(got, huge) {
+		t.Fatal("an oversize connect packet must pass through unmodified")
+	}
+}

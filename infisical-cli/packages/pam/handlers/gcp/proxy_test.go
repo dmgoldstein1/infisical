@@ -33,3 +33,26 @@ func TestIsGCPHost(t *testing.T) {
 		})
 	}
 }
+func TestRedactedLogHeaders(t *testing.T) {
+	h := map[string][]string{
+		"Authorization":       {"Bearer secret-token"},
+		"Proxy-Authorization": {"Basic c2VjcmV0"},
+		"Cookie":              {"session=abc"},
+		"Content-Type":        {"application/json"},
+	}
+	got := redactedLogHeaders(h)
+	for _, k := range []string{"Authorization", "Proxy-Authorization", "Cookie"} {
+		for _, v := range got[k] {
+			if v != "[redacted]" {
+				t.Errorf("header %q not redacted: %q", k, v)
+			}
+		}
+	}
+	if got["Content-Type"][0] != "application/json" {
+		t.Errorf("non-sensitive header was altered: %q", got["Content-Type"])
+	}
+	// The original must be untouched so forwarding still carries credentials.
+	if h["Authorization"][0] != "Bearer secret-token" {
+		t.Errorf("original headers mutated")
+	}
+}

@@ -57,6 +57,7 @@ func TestTimeout_HandlerExceedsDeadline(t *testing.T) {
 
 	assert.Equal(t, http.StatusGatewayTimeout, rec.Code)
 	assert.Equal(t, "application/json", rec.Header().Get("Content-Type"))
+	assert.Equal(t, "nosniff", rec.Header().Get("X-Content-Type-Options"))
 
 	var resp errorResponse
 	err := json.Unmarshal(rec.Body.Bytes(), &resp)

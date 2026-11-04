@@ -3342,11 +3342,13 @@ export const AppConnections = {
     },
     OVH: {
       privateKey:
-        "The PEM-encoded private key issued by OVH OKMS for client certificate authentication (including the -----BEGIN/END PRIVATE KEY----- markers).",
+        "The PEM-encoded private key issued by OVHcloud KMS for client certificate authentication (including the -----BEGIN/END PRIVATE KEY----- markers).",
       certificate:
-        "The PEM-encoded public certificate issued by OVH OKMS for client certificate authentication (including the -----BEGIN/END CERTIFICATE----- markers).",
-      okmsDomain: "The OKMS base URL (e.g., 'https://ca-east-bhs.okms.ovh.net').",
-      okmsId: "The OKMS instance identifier from the OVH Control Panel, used as a path segment in all API calls."
+        "The PEM-encoded public certificate issued by OVHcloud KMS for client certificate authentication (including the -----BEGIN/END CERTIFICATE----- markers).",
+      okmsDomain: "The OVHcloud KMS base URL (e.g., 'https://ca-east-bhs.okms.ovh.net').",
+      okmsId:
+        "The OVHcloud KMS instance identifier from the OVH Control Panel, used as a path segment in all API calls.",
+      token: "The access token used to authenticate to the OVHcloud KMS REST API"
     },
     SNOWFLAKE: {
       account: "The Snowflake account identifier (e.g., xy12345.us-east-1).",
@@ -3611,7 +3613,7 @@ export const SecretSyncs = {
       path: "The Hashicorp Vault path to sync secrets to."
     },
     OVH: {
-      path: "The path in OVH OKMS where secrets will be stored as key/value pairs."
+      path: "The path in OVHcloud KMS where secrets will be stored as key/value pairs."
     },
     TEAMCITY: {
       project: "The TeamCity project to sync secrets to.",
@@ -5002,8 +5004,9 @@ export const AGENT_VAULT = {
 
   SESSION: {
     sessionId: "The ID of the session.",
-    accessBundles:
-      "The access bundle this session carries, by name. A list that accepts one name at most. Leave it out to start a session with services of its own only.",
+    accessBundle:
+      "The name of the access bundle this session carries. Leave it out to start a session with services of its own only.",
+    accessBundleRead: "The access bundle this session carries. Null for a session with services of its own only.",
     inlineServices:
       "Services this session carries itself, alongside its access bundle's or without one. Agent Vault admins only, up to 20. Each takes the same fields as a service in an access bundle, with three differences: the name is optional, every value is sent exactly as given because variables aren't available, and no field can be left to members. They belong to this session only and can't be edited. Their credentials, custom header values and substitution values are deleted when the session is revoked, or within an hour after it expires.",
     inlineServiceName:

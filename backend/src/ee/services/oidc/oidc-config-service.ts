@@ -6,11 +6,14 @@ import { Issuer, Issuer as OpenIdIssuer, Strategy as OpenIdStrategy, TokenSet } 
 import { AccessScope, OrganizationActionScope, OrgMembershipStatus, TableName, TUsers } from "@app/db/schemas";
 import { TOidcConfigsUpdate } from "@app/db/schemas/oidc-configs";
 import { EventType, TAuditLogServiceFactory } from "@app/ee/services/audit-log/audit-log-types";
+import { TGatewayV2ServiceFactory } from "@app/ee/services/gateway-v2/gateway-v2-service";
 import { TGroupDALFactory } from "@app/ee/services/group/group-dal";
 import { addUsersToGroupByUserIds, removeUsersFromGroupByUserIds } from "@app/ee/services/group/group-fns";
 import { TUserGroupMembershipDALFactory } from "@app/ee/services/group/user-group-membership-dal";
 import { getEnforcedIdentityLimit, throwOnPlanSeatLimitReached } from "@app/ee/services/license/license-fns";
 import { TLicenseServiceFactory } from "@app/ee/services/license/license-service";
+import { TPamAccountDALFactory } from "@app/ee/services/pam-account/pam-account-dal";
+import { TPamSessionDALFactory } from "@app/ee/services/pam-session/pam-session-dal";
 import { OrgPermissionSsoActions, OrgPermissionSubjects } from "@app/ee/services/permission/org-permission";
 import { TPermissionServiceFactory } from "@app/ee/services/permission/permission-service-types";
 import { getConfig } from "@app/lib/config/env";
@@ -47,6 +50,7 @@ import { TKmsServiceFactory } from "@app/services/kms/kms-service";
 import { KmsDataKey } from "@app/services/kms/kms-types";
 import { TUsageMeteringServiceFactory } from "@app/services/license-client/usage";
 import { TMembershipGroupDALFactory } from "@app/services/membership-group/membership-group-dal";
+import { TMembershipDALFactory } from "@app/services/membership/membership-dal";
 import { TMembershipRoleDALFactory } from "@app/services/membership/membership-role-dal";
 import { TOrgDALFactory } from "@app/services/org/org-dal";
 import { getDefaultOrgMembershipRole } from "@app/services/org/org-role-fns";
@@ -70,7 +74,11 @@ import { UserAliasType } from "@app/services/user-alias/user-alias-types";
 import { TUserDALFactory } from "@app/services/user/user-dal";
 
 import { TEmailDomainDALFactory } from "../email-domain/email-domain-dal";
-import { findOrgIdByVerifiedDomain, verifyEmailDomainOwnership } from "../email-domain/email-domain-fns";
+import {
+  findOrgIdByVerifiedDomain,
+  isIdpAuthoritativeForDomain,
+  verifyEmailDomainOwnership
+} from "../email-domain/email-domain-fns";
 import { TOidcConfigDALFactory } from "./oidc-config-dal";
 import { resolveOidcGroupMembershipChanges } from "./oidc-config-fns";
 import {
@@ -106,7 +114,8 @@ type TOidcConfigServiceFactoryDep = {
     | "lockActorsForOrgAccess"
   >;
   membershipGroupDAL: Pick<TMembershipGroupDALFactory, "find">;
-  membershipRoleDAL: Pick<TMembershipRoleDALFactory, "create">;
+  membershipDAL: Pick<TMembershipDALFactory, "findResourceMembershipsForActors">;
+  membershipRoleDAL: Pick<TMembershipRoleDALFactory, "create" | "find">;
   licenseService: Pick<TLicenseServiceFactory, "getPlan" | "getOrgSeatUsage" | "updateSubscriptionOrgMemberCount">;
   tokenService: Pick<TAuthTokenServiceFactory, "createTokenForUser">;
   smtpService: Pick<TSmtpService, "sendMail" | "verify">;
@@ -134,6 +143,9 @@ type TOidcConfigServiceFactoryDep = {
   emailDomainDAL: Pick<TEmailDomainDALFactory, "findOne">;
   telemetryService: Pick<TTelemetryServiceFactory, "sendPostHogEvents">;
   usageMeteringService: Pick<TUsageMeteringServiceFactory, "emit">;
+  pamAccountDAL: Pick<TPamAccountDALFactory, "find">;
+  pamSessionDAL: Pick<TPamSessionDALFactory, "find" | "update">;
+  gatewayV2Service: Pick<TGatewayV2ServiceFactory, "getPAMConnectionDetails">;
 };
 
 export type TOidcConfigServiceFactory = ReturnType<typeof oidcConfigServiceFactory>;
@@ -151,6 +163,7 @@ export const oidcConfigServiceFactory = ({
   userGroupMembershipDAL,
   groupDAL,
   membershipGroupDAL,
+  membershipDAL,
   membershipRoleDAL,
   projectKeyDAL,
   alertChannelRecipientDAL,
@@ -162,7 +175,10 @@ export const oidcConfigServiceFactory = ({
   loginService,
   emailDomainDAL,
   telemetryService,
-  usageMeteringService
+  usageMeteringService,
+  pamAccountDAL,
+  pamSessionDAL,
+  gatewayV2Service
 }: TOidcConfigServiceFactoryDep) => {
   const getOidc = async (dto: TGetOidcCfgDTO) => {
     const oidcCfg = await oidcConfigDAL.findOne({
@@ -243,7 +259,7 @@ export const oidcConfigServiceFactory = ({
       });
     }
 
-    await verifyEmailDomainOwnership({ email, orgId, emailDomainDAL });
+    const ownedDomain = await verifyEmailDomainOwnership({ email, orgId, emailDomainDAL });
     const sanitizedEmail = sanitizeEmail(email);
     validateEmail(sanitizedEmail);
 
@@ -256,10 +272,10 @@ export const oidcConfigServiceFactory = ({
     const organization = await requestMemoize(requestMemoKeys.orgFindOrgById(orgId), () => orgDAL.findOrgById(orgId));
     if (!organization) throw new NotFoundError({ message: `Organization with ID '${orgId}' not found` });
 
-    // When the org enforces SSO, the verified domain + IdP are authoritative, so we skip the
-    // separate email-verification step (the email-domain ownership check above already proves the
-    // org owns this domain, and password signup is blocked for enforced domains).
-    const skipEmailVerification = Boolean(organization.authEnforced);
+    // The IdP is authoritative, and the separate email-verification step is skipped, only when the
+    // org enforces SSO and owns the asserted domain. Enforcement alone would promote an alias for
+    // any address the IdP asserts; ownership is what makes the assertion proof of the mailbox.
+    const isIdpAuthoritative = isIdpAuthoritativeForDomain({ isAuthEnforced: organization.authEnforced, ownedDomain });
 
     let user: TUsers;
     // A stale, still-unverified alias may point at another user's account. Don't mutate that
@@ -360,8 +376,8 @@ export const oidcConfigServiceFactory = ({
               lastName,
               authMethods: [],
               isGhost: false,
-              isEmailVerified: skipEmailVerification,
-              isAccepted: skipEmailVerification
+              isEmailVerified: isIdpAuthoritative,
+              isAccepted: isIdpAuthoritative
             },
             tx
           );
@@ -377,7 +393,7 @@ export const oidcConfigServiceFactory = ({
             externalId,
             emails: sanitizedEmail ? [sanitizedEmail] : [],
             orgId,
-            isEmailVerified: skipEmailVerification
+            isEmailVerified: isIdpAuthoritative
           },
           tx
         );
@@ -509,7 +525,7 @@ export const oidcConfigServiceFactory = ({
       }
 
       for await (const group of groupsToRemoveUserFrom) {
-        await removeUsersFromGroupByUserIds({
+        const { sendPamCancellations } = await removeUsersFromGroupByUserIds({
           userIds: [user.id],
           group,
           userDAL,
@@ -520,8 +536,14 @@ export const oidcConfigServiceFactory = ({
           additionalPrivilegeDAL,
           usageMeteringService,
           alertChannelRecipientDAL,
-          eventEmitter
+          eventEmitter,
+          membershipDAL,
+          membershipRoleDAL,
+          pamAccountDAL,
+          pamSessionDAL,
+          gatewayV2Service
         });
+        sendPamCancellations();
       }
 
       if (groupsToRemoveUserFrom.length) {
@@ -548,8 +570,8 @@ export const oidcConfigServiceFactory = ({
 
     await oidcConfigDAL.update({ orgId }, { lastUsed: new Date() });
 
-    // When SSO is enforced, mark the user + alias as verified/accepted before issuing a session.
-    if (skipEmailVerification) {
+    // When the IdP is authoritative, mark the user + alias as verified/accepted before issuing a session.
+    if (isIdpAuthoritative) {
       ({ user, userAlias } = await ensureSsoAccountVerified({
         user,
         userAlias,
@@ -568,7 +590,7 @@ export const oidcConfigServiceFactory = ({
       assertedFirstName: firstName,
       assertedLastName: lastName,
       orgId,
-      isAuthEnforced: Boolean(organization.authEnforced),
+      isIdpAuthoritative,
       userDAL,
       userAliasDAL,
       emailDomainDAL,

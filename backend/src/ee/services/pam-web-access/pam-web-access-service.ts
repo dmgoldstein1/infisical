@@ -82,7 +82,10 @@ type TPamWebAccessServiceFactoryDep = {
   membershipDAL: Pick<TMembershipDALFactory, "lockOrgMembershipForUser" | "findResourceMembershipsForActor">;
   membershipRoleDAL: Pick<TMembershipRoleDALFactory, "find">;
   gatewayV2Service: Pick<TGatewayV2ServiceFactory, "getPAMConnectionDetails">;
-  gatewayPoolService: Pick<TGatewayPoolServiceFactory, "resolveEffectiveGatewayId" | "runWithPoolFailover">;
+  gatewayPoolService: Pick<
+    TGatewayPoolServiceFactory,
+    "resolveEffectiveGatewayId" | "runWithPoolFailover" | "assertGatewayBindingInOrg"
+  >;
   kmsService: Pick<TKmsServiceFactory, "createCipherPairWithDataKey">;
   userDAL: Pick<TUserDALFactory, "findById">;
   mfaSessionService: Pick<

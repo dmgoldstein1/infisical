@@ -261,6 +261,10 @@ func (s *Server) refuse(w http.ResponseWriter, r *http.Request, host, reason str
 	log.Printf("%-6s %s%s -> 501  %s", r.Method, host, r.URL.Path, reason)
 
 	w.Header().Set("Content-Type", "application/json")
+	// Defense-in-depth at this error sink: the message echoes the
+	// request-derived method/host/path, so opt out of MIME sniffing to keep
+	// browsers from interpreting the payload as active content.
+	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.WriteHeader(http.StatusNotImplemented)
 	_ = json.NewEncoder(w).Encode(map[string]string{"message": msg})
 }

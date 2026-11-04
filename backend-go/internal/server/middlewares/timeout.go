@@ -38,6 +38,11 @@ func Timeout(duration time.Duration) func(http.Handler) http.Handler {
 						tw.timedOut = true
 						reqID := requestid.FromContext(r.Context())
 						tw.ResponseWriter.Header().Set("Content-Type", "application/json")
+						// Defense-in-depth at this error sink: the request ID
+						// echoed in the JSON body is request-derived, so opt
+						// out of MIME sniffing to keep browsers from
+						// interpreting the payload as active content.
+						tw.ResponseWriter.Header().Set("X-Content-Type-Options", "nosniff")
 						tw.ResponseWriter.WriteHeader(http.StatusGatewayTimeout)
 
 						resp := errorResponse{

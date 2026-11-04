@@ -537,11 +537,6 @@ export const pamWebAccessServiceFactory = ({
         sessionDurationCapMs = Math.min(sessionDurationCapMs, launchAccessRemainingMs);
       }
 
-      await gatewayPoolService.assertGatewayBindingInOrg({
-        gatewayId: account.gatewayId ?? account.templateGatewayId,
-        gatewayPoolId: account.gatewayPoolId ?? account.templateGatewayPoolId,
-        orgId
-      });
       const effectiveGatewayId = await gatewayPoolService.resolveEffectiveGatewayId({
         gatewayId: account.gatewayId ?? account.templateGatewayId,
         gatewayPoolId: account.gatewayPoolId ?? account.templateGatewayPoolId

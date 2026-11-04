@@ -275,3 +275,19 @@ func TestAlterPasswordStatementRejectsInjectionBreakout(t *testing.T) {
 		}
 	}
 }
+
+func TestAlterPasswordStatementRejectsQuotedPasswords(t *testing.T) {
+	base := sqlRotateParams{TargetUsername: "APP_USER", NewPassword: `bad"pw`}
+	base.Dialect = "oracle"
+	base.Username = "APP_USER"
+	base.Password = "OldPw_1"
+	if _, err := alterPasswordStatement(base, base.TargetUsername, base.Username, true); err == nil {
+		t.Fatal("a new password containing a double quote must be rejected")
+	}
+	self := base
+	self.NewPassword = "NewPw_123"
+	self.Password = `old"pw`
+	if _, err := alterPasswordStatement(self, self.TargetUsername, self.Username, true); err == nil {
+		t.Fatal("a current password containing a double quote must be rejected")
+	}
+}

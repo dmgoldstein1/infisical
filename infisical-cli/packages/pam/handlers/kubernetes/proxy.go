@@ -85,6 +85,39 @@ func (p *KubernetesProxy) injectAuthHeaders(headers http.Header) error {
 	return nil
 }
 
+// redactedLogHeaders returns a copy of h with credential-bearing header values
+// replaced, so audit logs never persist secrets (e.g. Authorization bearer
+// tokens, impersonation headers) in clear text. The proxied request itself is
+// forwarded unmodified.
+func redactedLogHeaders(h http.Header) http.Header {
+	if len(h) == 0 {
+		return h
+	}
+	out := make(http.Header, len(h))
+	for k, v := range h {
+		switch strings.ToLower(k) {
+		case "authorization", "proxy-authorization", "cookie", "set-cookie",
+			"impersonate-user", "impersonate-group", "impersonate-uid":
+			red := make([]string, len(v))
+			for i := range v {
+				red[i] = "[redacted]"
+			}
+			out[k] = red
+		default:
+			if strings.HasPrefix(strings.ToLower(k), "impersonate-extra-") {
+				red := make([]string, len(v))
+				for i := range v {
+					red[i] = "[redacted]"
+				}
+				out[k] = red
+				continue
+			}
+			out[k] = v
+		}
+	}
+	return out
+}
+
 func buildHttpInternalServerError(message string) string {
 	return fmt.Sprintf("HTTP/1.1 500 Internal Server Error\r\nContent-Type: application/json\r\n\r\n{\"message\": \"gateway: %s\"}", message)
 }
@@ -176,10 +209,9 @@ func (p *KubernetesProxy) HandleConnection(ctx context.Context, clientConn net.C
 			EventType: session.HttpEventRequest,
 			URL:       req.URL.String(),
 			Method:    req.Method,
-			// Credential-carrying headers are redacted inside
-			// EncryptedSessionLogger (see redactSensitiveHeaders), so the raw
-			// header map is safe to hand over here.
-			Headers: req.Header,
+			// Defense in depth: EncryptedSessionLogger also redacts, but the
+			// header map handed to the audit log must not carry credentials.
+			Headers: redactedLogHeaders(req.Header),
 			Body:    loggedReqBody,
 		})
 		if err != nil {

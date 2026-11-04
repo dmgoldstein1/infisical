@@ -795,6 +795,7 @@ export const registerRoutes = async (
   const secretSyncDAL = secretSyncDALFactory(db, folderDAL);
   const userNotificationDAL = userNotificationDALFactory(db);
   const pamSessionDAL = pamSessionDALFactory(db);
+  const pamAccountDAL = pamAccountDALFactory(db);
 
   const deferredGatewayV2Service: Pick<TGatewayV2ServiceFactory, "getPAMConnectionDetails"> = {
     // eslint-disable-next-line @typescript-eslint/no-use-before-define
@@ -924,7 +925,8 @@ export const registerRoutes = async (
     identityDAL,
     additionalPrivilegeDAL,
     groupDAL,
-    secretFolderDAL: folderDAL
+    secretFolderDAL: folderDAL,
+    orgDAL
   });
 
   const assumePrivilegeService = assumePrivilegeServiceFactory({
@@ -1056,7 +1058,12 @@ export const registerRoutes = async (
     identityGroupMembershipDAL,
     userGroupMembershipDAL,
     identityAccessTokenService,
-    eventEmitter: eventOutboxService
+    eventEmitter: eventOutboxService,
+    membershipDAL,
+    pamAccountDAL,
+    pamSessionDAL,
+    userDAL,
+    gatewayV2Service: deferredGatewayV2Service
   });
 
   const roleService = roleServiceFactory({
@@ -1336,7 +1343,6 @@ export const registerRoutes = async (
     ? clickhouseAuditLogDALFactory(clickhouse, db, envConfig.CLICKHOUSE_AUDIT_LOG_TABLE_NAME)
     : undefined;
 
-  const pamAccountDAL = pamAccountDALFactory(db);
   const auditLogService = auditLogServiceFactory({
     auditLogDAL,
     clickhouseAuditLogDAL,
@@ -1450,7 +1456,10 @@ export const registerRoutes = async (
     identityAccessTokenService,
     alertChannelRecipientDAL,
     eventEmitter: eventOutboxService,
-    membershipGroupService
+    membershipGroupService,
+    pamAccountDAL,
+    pamSessionDAL,
+    gatewayV2Service: deferredGatewayV2Service
   });
   const groupProjectService = groupProjectServiceFactory({
     groupDAL,
@@ -1529,6 +1538,7 @@ export const registerRoutes = async (
     externalGroupOrgRoleMappingDAL,
     groupDAL,
     membershipGroupDAL,
+    membershipDAL,
     membershipRoleDAL,
     membershipUserDAL,
     additionalPrivilegeDAL,
@@ -1540,7 +1550,8 @@ export const registerRoutes = async (
     usageMeteringService,
     pamSessionDAL,
     gatewayV2Service: deferredGatewayV2Service,
-    eventEmitter: eventOutboxService
+    eventEmitter: eventOutboxService,
+    pamAccountDAL
   });
 
   const githubOrgSyncConfigService = githubOrgSyncServiceFactory({
@@ -1558,7 +1569,12 @@ export const registerRoutes = async (
     alertChannelRecipientDAL,
     auditLogService,
     orgDAL,
-    eventEmitter: eventOutboxService
+    eventEmitter: eventOutboxService,
+    membershipDAL,
+    pamAccountDAL,
+    pamSessionDAL,
+    userDAL,
+    gatewayV2Service: deferredGatewayV2Service
   });
 
   // gitHubAppService is created after gatewayPoolService (below) due to dependency on gateway services
@@ -1660,6 +1676,7 @@ export const registerRoutes = async (
     tokenService,
     smtpService,
     kmsService,
+    membershipDAL,
     membershipRoleDAL,
     membershipGroupDAL,
     loginService,
@@ -1668,7 +1685,10 @@ export const registerRoutes = async (
     usageMeteringService,
     alertChannelRecipientDAL,
     eventEmitter: eventOutboxService,
-    keyStore
+    keyStore,
+    pamAccountDAL,
+    pamSessionDAL,
+    gatewayV2Service: deferredGatewayV2Service
   });
 
   const ldapService = ldapConfigServiceFactory({
@@ -1690,13 +1710,17 @@ export const registerRoutes = async (
     smtpService,
     kmsService,
     membershipGroupDAL,
+    membershipDAL,
     membershipRoleDAL,
     loginService,
     emailDomainDAL,
     telemetryService,
     usageMeteringService,
     alertChannelRecipientDAL,
-    eventEmitter: eventOutboxService
+    eventEmitter: eventOutboxService,
+    pamAccountDAL,
+    pamSessionDAL,
+    gatewayV2Service: deferredGatewayV2Service
   });
   const passwordService = authPaswordServiceFactory({
     tokenService,
@@ -3293,13 +3317,17 @@ export const registerRoutes = async (
     groupDAL,
     auditLogService,
     membershipGroupDAL,
+    membershipDAL,
     membershipRoleDAL,
     loginService,
     emailDomainDAL,
     telemetryService,
     usageMeteringService,
     alertChannelRecipientDAL,
-    eventEmitter: eventOutboxService
+    eventEmitter: eventOutboxService,
+    pamAccountDAL,
+    pamSessionDAL,
+    gatewayV2Service
   });
 
   const userActivationService = userActivationServiceFactory({
@@ -4402,6 +4430,7 @@ export const registerRoutes = async (
     mfaSessionService,
     orgDAL,
     membershipDAL,
+    membershipRoleDAL,
     telemetryService
   });
 

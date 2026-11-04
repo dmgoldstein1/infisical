@@ -4879,6 +4879,7 @@ export const AGENT_VAULT = {
     revokeGroupIds: "The IDs of the groups to revoke the access bundle from.",
     skipped: "The requested grantees who already had the access bundle and were left as they were.",
     revokeSkipped: "The requested grantees who did not have the access bundle, so nothing was revoked.",
+    actorTypeFilter: "List only users, only groups or only machine identities.",
     search: "Match members by name, username or email address.",
     limit: "The maximum number of members to return.",
     offset: "How many members to skip."
@@ -4908,6 +4909,7 @@ export const AGENT_VAULT = {
     offset: "How many candidates to skip."
   },
   AVAILABLE_GRANTEE: {
+    actorTypeFilter: "List only users, only groups or only machine identities.",
     search: "Match candidates by name, username or email address.",
     limit: "The maximum number of candidates to return.",
     offset: "How many candidates to skip."
@@ -4928,6 +4930,7 @@ export const AGENT_VAULT = {
     rootCa:
       "The certificate authority Infisical keeps for this proxy: a PEM certificate and its PKCS#8 PEM private key.",
     rootCaCertificatePem: "The certificate authority's certificate, in PEM form.",
+    ca: "The certificate authority the proxy serves, with its certificate in PEM form. Agents trust it to accept the proxy's certificates.",
     rootCaPrivateKey: "The certificate authority's private key, in PKCS#8 PEM form.",
     servedCaCertificate:
       "The certificate authority the proxy serves, in PEM form, when it uses its own instead of Infisical's. Infisical records its fingerprint and returns no `rootCa`.",

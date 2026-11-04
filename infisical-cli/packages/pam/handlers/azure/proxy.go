@@ -283,6 +283,29 @@ func (p *AzureProxy) handleRequest(_ context.Context, writer io.Writer, req *htt
 	return p.forward(writer, req, client, l, token, isVaultHost(hostname), requestId)
 }
 
+// redactedLogHeaders returns a copy of h with credential-bearing header values
+// replaced, so audit logs never persist secrets (e.g. Authorization bearer
+// tokens) in clear text. The proxied request itself is forwarded unmodified.
+func redactedLogHeaders(h http.Header) http.Header {
+	if len(h) == 0 {
+		return h
+	}
+	out := make(http.Header, len(h))
+	for k, v := range h {
+		switch strings.ToLower(k) {
+		case "authorization", "proxy-authorization", "cookie", "set-cookie":
+			red := make([]string, len(v))
+			for i := range v {
+				red[i] = "[redacted]"
+			}
+			out[k] = red
+		default:
+			out[k] = v
+		}
+	}
+	return out
+}
+
 func (p *AzureProxy) forward(writer io.Writer, req *http.Request, client *http.Client, l zerolog.Logger, injectToken string, redactBody bool, requestId uuid.UUID) error {
 	const maxLogBodySize = 1 << 20 // 1 MiB cap for audit-logged bodies
 	redactedMarker := []byte("[redacted: Key Vault body]")
@@ -310,7 +333,7 @@ func (p *AzureProxy) forward(writer io.Writer, req *http.Request, client *http.C
 			EventType: session.HttpEventRequest,
 			URL:       req.URL.String(),
 			Method:    req.Method,
-			Headers:   req.Header,
+			Headers:   redactedLogHeaders(req.Header),
 			Body:      loggedReqBody,
 		}); err != nil {
 			l.Error().Err(err).Msg("Failed to log HTTP request event")

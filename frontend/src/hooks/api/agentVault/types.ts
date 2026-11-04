@@ -150,7 +150,12 @@ export type TAgentVaultActor =
 
 export type TAgentVaultActorRef = { type: AgentVaultMemberType; id: string };
 
-export type TAgentVaultMember = TAgentVaultActor & { grantedAt: string };
+export type TAgentVaultMember = (
+  | (Extract<TAgentVaultActor, { type: AgentVaultMemberType.User }> & {
+      isOrgMembershipPending: boolean;
+    })
+  | Exclude<TAgentVaultActor, { type: AgentVaultMemberType.User }>
+) & { grantedAt: string };
 
 export type TAgentVaultProductActor =
   | (Extract<TAgentVaultActor, { type: AgentVaultMemberType.User }> & {
@@ -341,6 +346,12 @@ export type TAgentVaultProxy = {
   allowedHosts?: string | null;
   pollInterval?: number;
   createdAt?: string;
+};
+
+export type TAgentVaultProxyCa = {
+  certificate: string;
+  fingerprint: string;
+  expiresAt: string;
 };
 
 export type TAgentVaultProxyToken = {

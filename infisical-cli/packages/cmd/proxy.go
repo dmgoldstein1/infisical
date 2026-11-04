@@ -249,7 +249,7 @@ func startProxyServer(cmd *cobra.Command, args []string) {
 			requestBodyBytes, err = io.ReadAll(r.Body)
 			if err != nil {
 				log.Error().Err(err).Msg("Failed to read request body")
-				http.Error(w, fmt.Sprintf("Failed to read request body: %v", err), http.StatusInternalServerError)
+				http.Error(w, "Failed to read request body", http.StatusInternalServerError)
 				return
 			}
 		}
@@ -266,7 +266,7 @@ func startProxyServer(cmd *cobra.Command, args []string) {
 		proxyReq, err := http.NewRequest(r.Method, targetURL.String(), bodyReader)
 		if err != nil {
 			log.Error().Err(err).Msg("Failed to create proxy request")
-			http.Error(w, fmt.Sprintf("Failed to create proxy request: %v", err), http.StatusInternalServerError)
+			http.Error(w, "Failed to create proxy request", http.StatusInternalServerError)
 			return
 		}
 
@@ -287,7 +287,7 @@ func startProxyServer(cmd *cobra.Command, args []string) {
 		resp, err := clientToUse.Do(proxyReq)
 		if err != nil {
 			log.Error().Err(err).Msg("Failed to forward request")
-			http.Error(w, fmt.Sprintf("Failed to forward request: %v", err), http.StatusBadGateway)
+			http.Error(w, "Failed to forward request", http.StatusBadGateway)
 			return
 		}
 		defer resp.Body.Close()
@@ -333,7 +333,7 @@ func startProxyServer(cmd *cobra.Command, args []string) {
 		bodyBytes, err := io.ReadAll(resp.Body)
 		if err != nil {
 			log.Error().Err(err).Msg("Failed to read response body")
-			http.Error(w, fmt.Sprintf("Failed to read response body: %v", err), http.StatusInternalServerError)
+			http.Error(w, "Failed to read response body", http.StatusInternalServerError)
 			return
 		}
 

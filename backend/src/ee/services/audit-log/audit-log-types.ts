@@ -490,6 +490,7 @@ export enum EventType {
   ORG_ADMIN_BYPASS_SSO = "org-admin-bypassed-sso",
   USER_LOGIN = "user-login",
   SELECT_ORGANIZATION = "select-organization",
+  SELECT_ORGANIZATION_REFUSED = "select-organization-refused",
   SELECT_SUB_ORGANIZATION = "select-sub-organization",
   CREATE_CERTIFICATE_POLICY = "create-certificate-policy",
   UPDATE_CERTIFICATE_POLICY = "update-certificate-policy",
@@ -3769,6 +3770,15 @@ interface SelectOrganizationEvent {
   };
 }
 
+// The session was issued by another root org's IdP, which does not satisfy this org's enforcement.
+interface SelectOrganizationRefusedEvent {
+  type: EventType.SELECT_ORGANIZATION_REFUSED;
+  metadata: {
+    organizationId: string;
+    organizationName: string;
+  };
+}
+
 interface SelectSubOrganizationEvent {
   type: EventType.SELECT_SUB_ORGANIZATION;
   metadata: {
@@ -6948,9 +6958,25 @@ interface AgentVaultSessionMintEvent {
   metadata: {
     sessionId: string;
     label: string | null;
-    accessBundleId: string;
-    accessBundleName: string;
+    // Null for a session started with inline services only.
+    accessBundleId: string | null;
+    accessBundleName: string | null;
     expiresAt: string | null;
+    // Set when an admin sent services with the session. Never their values.
+    services?: {
+      serviceId: string;
+      // The name it was sent with, or its first host when it was sent without one.
+      name: string;
+      serviceType: string;
+      serverUrl?: string;
+      hostPattern: string;
+      credentialType: string;
+      headerName?: string;
+      allowedMethods: string[] | null;
+      allowedPathPrefixes: string[] | null;
+      customHeaderNames: string[];
+      substitutionPlaceholders: string[];
+    }[];
     // Set when a machine identity started the session on this user's behalf.
     onBehalfOfUserId?: string;
     onBehalfOfUserName?: string;
@@ -9075,6 +9101,7 @@ export type Event =
   | CertificateIssuanceFailedEvent
   | UserLoginEvent
   | SelectOrganizationEvent
+  | SelectOrganizationRefusedEvent
   | SelectSubOrganizationEvent
   | ApprovalPolicyCreateEvent
   | ApprovalPolicyUpdateEvent

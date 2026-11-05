@@ -611,12 +611,13 @@ func (p *PostgresProxy) handleCleartextPasswordAsProxy(clientBackend *pgproto3.B
 	}
 }
 
-func (p *PostgresProxy) handleMD5PasswordAsProxy(clientBackend *pgproto3.Backend, serverFrontend *pgproto3.Frontend, authMD5 *pgproto3.AuthenticationMD5Password) error {
-	// Calculate MD5 hash: md5(md5(password + username) + salt)
-	username := p.config.InjectUsername
-	password := p.config.InjectPassword
-	salt := authMD5.Salt
-
+// md5PasswordResponse computes the PostgreSQL wire-protocol MD5 auth response:
+// md5(md5(password + username) + salt). MD5 is mandated here by the server's
+// AuthenticationMD5Password request (CodeQL go/weak-sensitive-data-hashing):
+// answering in any other hash is a protocol violation the server rejects, and
+// choosing SCRAM instead requires a server-side user/role change outside this
+// proxy's control.
+func md5PasswordResponse(username, password string, salt [4]byte) string {
 	// First hash: md5(password + username)
 	firstHash := md5.Sum([]byte(password + username))
 	firstHashHex := fmt.Sprintf("%x", firstHash)
@@ -624,7 +625,12 @@ func (p *PostgresProxy) handleMD5PasswordAsProxy(clientBackend *pgproto3.Backend
 	// Second hash: md5(firstHashHex + salt)
 	secondInput := append([]byte(firstHashHex), salt[:]...)
 	secondHash := md5.Sum(secondInput)
-	finalHash := fmt.Sprintf("md5%x", secondHash)
+	return fmt.Sprintf("md5%x", secondHash)
+}
+
+func (p *PostgresProxy) handleMD5PasswordAsProxy(clientBackend *pgproto3.Backend, serverFrontend *pgproto3.Frontend, authMD5 *pgproto3.AuthenticationMD5Password) error {
+	// Calculate MD5 hash: md5(md5(password + username) + salt)
+	finalHash := md5PasswordResponse(p.config.InjectUsername, p.config.InjectPassword, authMD5.Salt)
 
 	// Send the MD5 hashed password to the server
 	passwordMsg := &pgproto3.PasswordMessage{

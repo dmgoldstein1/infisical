@@ -60,7 +60,7 @@ require (
 	github.com/youmark/pkcs8 v0.0.0-20240726163527-a2c0da244d78
 	go.mongodb.org/mongo-driver/v2 v2.5.0
 	go.mozilla.org/pkcs7 v0.9.0
-	golang.org/x/crypto v0.58.0
+	golang.org/x/crypto v0.58.1-0.20261009181718-2f1f834330b2
 	golang.org/x/exp v0.0.0-20250228200357-dead58393ab7
 	golang.org/x/sync v0.24.0
 	golang.org/x/sys v0.49.0

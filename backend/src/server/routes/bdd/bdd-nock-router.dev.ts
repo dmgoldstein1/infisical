@@ -7,6 +7,8 @@ import { logger } from "@app/lib/logger";
 import { verifyAuth } from "@app/server/plugins/auth/verify-auth";
 import { AuthMode } from "@app/services/auth/auth-type";
 
+import { hasNestedQuantifier } from "./bdd-nock-regex-guard";
+
 // When running in production, we don't want to even import nock, because it's not needed and it increases memory usage a lots.
 // It once caused an outage in the production environment.
 // This is why we would rather to crash the app if it's not in development mode (in that case, Kubernetes should stop it from rolling out).
@@ -61,6 +63,9 @@ export const registerBddNockRouter = async (server: FastifyZodProvider) => {
         try {
           regex = new RegExp(source);
         } catch {
+          throw new ForbiddenRequestError({ message: "Invalid nock definition" });
+        }
+        if (hasNestedQuantifier(source)) {
           throw new ForbiddenRequestError({ message: "Invalid nock definition" });
         }
         return { ...rest, path: regex } as Definition;

@@ -2,6 +2,8 @@ package util
 
 import (
 	"bytes"
+	"crypto/hmac"
+	cryptorand "crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
@@ -672,6 +674,18 @@ func GenerateRandomString(length int) string {
 	return string(b)
 }
 
+// etagMACKey is a process-lifetime key for ETags. ETags are compared
+// intra-process only (hot-reload change detection in cmd/run.go), so a
+// per-process key is safe; keying the MAC means a disclosed ETag cannot be
+// used to brute-force low-entropy secret values offline.
+var etagMACKey = sync.OnceValue(func() [32]byte {
+	var k [32]byte
+	if _, err := cryptorand.Read(k[:]); err != nil {
+		panic("util: etag MAC randomness unavailable")
+	}
+	return k
+})
+
 func GenerateETagFromSecrets(secrets []models.SingleEnvironmentVariable) string {
 	sortedSecrets := SortSecretsByKeys(secrets)
 	content := []byte{}
@@ -681,8 +695,10 @@ func GenerateETagFromSecrets(secrets []models.SingleEnvironmentVariable) string 
 		content = append(content, []byte(secret.Value)...)
 	}
 
-	hash := sha256.Sum256(content)
-	return fmt.Sprintf(`"%s"`, hex.EncodeToString(hash[:]))
+	key := etagMACKey()
+	mac := hmac.New(sha256.New, key[:])
+	_, _ = mac.Write(content)
+	return fmt.Sprintf(`"%s"`, hex.EncodeToString(mac.Sum(nil)))
 }
 
 func IsDevelopmentMode() bool {

@@ -68,18 +68,15 @@
     "sha.js": "2.4.12",
     "jws": "^4.0.1",
     "qs": "^6.16.1",
-    "glob": {
-      ".": "^10.5.0",
-      "minimatch": {
-        "brace-expansion": "^2.1.2"
-      }
-    },
+    "glob": "^14.0.2",
+    "minimatch": "^11.0.1",
+    "brace-expansion": "^5.0.12",
     "cross-spawn": "^7.0.6",
     "next": "^16.4.1",
     "uuid": "^11.1.1",
     "validator": "^13.15.22",
     "react-email": {
-      "glob": "^11.1.0"
+      "glob": "^14.0.2"
     },
     "nan": "^2.29.0",
     "hono": "^4.13.13",
@@ -95,6 +92,7 @@
     "eslint-plugin-import": {
       "minimatch": "^3.1.2"
     },
+    "fast-copy": "^4.1.0",
     "ws": "^8.21.0",
     "fast-xml-parser": "^5.7.0",
     "path-to-regexp": "^8.4.0",
@@ -313,7 +311,7 @@
     "pino": "^8.16.2",
     "pkcs11js": "^2.1.6",
     "pkijs": "^3.4.2",
-    "posthog-node": "^5.28.1",
+    "posthog-node": "^5.57.2",
     "probot": "^14.3.2",
     "qs": "^6.16.1",
     "randexp": "^0.5.3",

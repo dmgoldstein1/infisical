@@ -3,6 +3,8 @@ package agentvault
 import (
 	"sync/atomic"
 
+	"crypto/hmac"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -76,10 +78,24 @@ type sessionEntry struct {
 	fetchedAt  time.Time
 }
 
-// The map key is the sha256 of the token, never the token itself, so a heap dump yields no live credential.
+// The map key is an HMAC of the token under a process-lifetime key, never the
+// token itself, so a heap dump yields no live credential and the lookup key is
+// not a deterministic function of the token that could be brute-forced offline.
+// A keyed MAC (not a password hash) is the correct primitive here: the cache is
+// in-memory only, so per-process keys are safe, and lookups must stay cheap.
+var sessionKeyMAC = sync.OnceValue(func() [32]byte {
+	var k [32]byte
+	if _, err := rand.Read(k[:]); err != nil {
+		panic("agentvault: session key MAC randomness unavailable")
+	}
+	return k
+})
+
 func sessionKey(token string) string {
-	sum := sha256.Sum256([]byte(token))
-	return hex.EncodeToString(sum[:])
+	key := sessionKeyMAC()
+	mac := hmac.New(sha256.New, key[:])
+	_, _ = mac.Write([]byte(token))
+	return hex.EncodeToString(mac.Sum(nil))
 }
 
 type sessionResolver interface {

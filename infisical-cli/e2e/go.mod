@@ -22,7 +22,7 @@ require (
 	github.com/testcontainers/testcontainers-go/modules/compose v0.40.0
 	github.com/testcontainers/testcontainers-go/modules/postgres v0.40.0
 	github.com/testcontainers/testcontainers-go/modules/redis v0.40.0
-	golang.org/x/crypto v0.58.0
+	golang.org/x/crypto v0.58.1-0.20261009181718-2f1f834330b2
 	gopkg.in/yaml.v3 v3.0.1
 )
 

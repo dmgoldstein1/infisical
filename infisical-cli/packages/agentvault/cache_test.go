@@ -1,6 +1,8 @@
 package agentvault
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"sync"
@@ -397,5 +399,35 @@ func TestCacheTimesIgnoreTheSleepingClock(t *testing.T) {
 	cache.refresh()
 	if e := cache.entries[key]; e.fetchedAt != e.fetchedAt.Round(0) {
 		t.Fatal("a refresh stamps fetchedAt with a monotonic reading")
+	}
+}
+
+// TestSessionKeyIsKeyedNotPlainHash pins the CodeQL go/weak-sensitive-data-hashing
+// remediation: the lookup key must be deterministic within the process, differ per
+// token, keep the 64-hex shape, and NOT be a plain SHA-256 of the token (a keyed
+// MAC under a process-lifetime key, so heap/disk disclosures cannot be brute-forced
+// offline against low-entropy tokens).
+func TestSessionKeyIsKeyedNotPlainHash(t *testing.T) {
+	t.Parallel()
+
+	a := sessionKey("agv_token")
+	if a != sessionKey("agv_token") {
+		t.Fatal("sessionKey is not deterministic within the process")
+	}
+	if len(a) != 64 {
+		t.Fatalf("sessionKey %q is not 64 hex chars", a)
+	}
+	for _, c := range a {
+		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')) {
+			t.Fatalf("sessionKey %q is not lowercase hex", a)
+		}
+	}
+	if b := sessionKey("agv_other"); a == b {
+		t.Fatal("sessionKey collides for distinct tokens")
+	}
+	plainSum := sha256.Sum256([]byte("agv_token"))
+	plain := hex.EncodeToString(plainSum[:])
+	if a == plain {
+		t.Fatal("sessionKey is a plain SHA-256 of the token")
 	}
 }

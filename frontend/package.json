@@ -24,7 +24,7 @@
     "rollup": "^4.59.0",
     "qs": "^6.16.0",
     "mdast-util-to-hast": "^13.2.1",
-    "js-yaml": "$js-yaml",
+    "js-yaml": "^4.3.2",
     "storybook": "~10.6.3",
     "tar": ">=7.5.21",
     "browserslist": "^4.28.7",
@@ -152,7 +152,7 @@
     "tailwind-merge": "^2.5.5",
     "xterm-readline": "^1.1.2",
     "yaml": "^2.8.3",
-    "zod": "^3.25.76",
+    "zod": "^3.24.1",
     "zustand": "^5.0.2"
   },
   "devDependencies": {

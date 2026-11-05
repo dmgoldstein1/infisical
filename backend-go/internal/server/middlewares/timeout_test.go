@@ -268,3 +268,22 @@ func TestTimeout_ContextCancelledNotDeadline(t *testing.T) {
 	// The external cancellation doesn't trigger the 504 path
 	assert.NotEqual(t, http.StatusGatewayTimeout, rec.Code)
 }
+
+// TestTimeoutWriter_PreservesResponseBytes pins the CodeQL go/reflected-xss
+// disposition: timeoutWriter.Write is a transparent byte passthrough for
+// upstream handler output (often binary/SSE). HTML-escaping here would corrupt
+// proxied bodies; the JSON error path instead relies on encoding/json (which
+// escapes HTML by default) plus `nosniff` + application/json. This test FAILS
+// if output encoding is ever applied at this sink.
+func TestTimeoutWriter_PreservesResponseBytes(t *testing.T) {
+	t.Parallel()
+
+	payload := []byte("data: <script>alert(1)</script>\n\ndata: {\"a\":\"b&c\"}\n\n")
+	rec := httptest.NewRecorder()
+	tw := &timeoutWriter{ResponseWriter: rec}
+
+	n, err := tw.Write(payload)
+	require.NoError(t, err)
+	assert.Equal(t, len(payload), n)
+	assert.Equal(t, payload, rec.Body.Bytes())
+}

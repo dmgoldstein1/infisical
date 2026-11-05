@@ -2,6 +2,7 @@ package oracle
 
 import (
 	"bytes"
+	"crypto/tls"
 	"encoding/hex"
 	"fmt"
 	"strings"
@@ -132,5 +133,26 @@ func TestRewriteConnectServiceNameLeavesOversizePacketAlone(t *testing.T) {
 	huge := append([]byte("(SERVICE_NAME=old)"), bytes.Repeat([]byte("A"), maxOracleRewritePayloadLen)...)
 	if got := rewriteConnectServiceName(huge, "newdb"); !bytes.Equal(got, huge) {
 		t.Fatal("an oversize connect packet must pass through unmodified")
+	}
+}
+
+// TestBuildTLSConfigKeepsLegacyFloor pins the CodeQL go/insecure-tls
+// disposition: the upstream Oracle/RDS floor stays at TLS 1.0 with a 1.2 cap
+// because Oracle 19c and older RDS endpoints negotiate down to 1.0 — raising
+// the floor would silently break those targets (no matrix coverage for them).
+// This test FAILS if MinVersion is ever raised, documenting the keep.
+func TestBuildTLSConfigKeepsLegacyFloor(t *testing.T) {
+	cfg := BuildTLSConfig(&tls.Config{}, "db.example.com")
+	if cfg.MinVersion != tls.VersionTLS10 {
+		t.Fatalf("MinVersion = %x, want TLS 1.0 (legacy Oracle/RDS floor)", cfg.MinVersion)
+	}
+	if cfg.MaxVersion != tls.VersionTLS12 {
+		t.Fatalf("MaxVersion = %x, want TLS 1.2 (Oracle has no 1.3 restart mechanism)", cfg.MaxVersion)
+	}
+	if cfg.ServerName != "db.example.com" {
+		t.Fatalf("ServerName = %q, want db.example.com", cfg.ServerName)
+	}
+	if len(cfg.CipherSuites) == 0 {
+		t.Fatal("upstream cipher list must not be empty")
 	}
 }

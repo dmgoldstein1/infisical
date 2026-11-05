@@ -411,6 +411,9 @@ const cryptographyFactory = () => {
     $checkIsInitialized();
     /**
      * @deprecated Do not use MD5 unless you absolutely have to. It is considered an unsafe hashing algorithm, and should only be used if absolutely necessary.
+     * The sole production caller is HTTP Digest access authentication (RFC 2617, `digest-auth.ts`), which
+     * mandates MD5 at the protocol level — answering in any other hash is rejected by the server.
+     * Never use for password storage: `createHash` (bcrypt, work factor clamped to >= 10) is the password sink.
      */
     const md5 = (message: string, digest: DigestType = DigestType.Hex) => {
       // If FIPS is enabled, we block MD5 directly.

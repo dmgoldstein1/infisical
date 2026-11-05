@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/Infisical/infisical-merge/packages/gateway-v2/certscan"
@@ -17,7 +18,28 @@ const (
 	sshExecDefaultTimeout  = 20 * time.Second
 	maxSshExecRequestBytes = 1 * 1024 * 1024
 	maxSshExecOutputBytes  = 4 * 1024 * 1024
+	// maxSshExecCommandBytes caps a single exec command well under the request
+	// envelope budget. The scanner issues short shell one-liners; anything
+	// larger is a misuse of the exec channel.
+	maxSshExecCommandBytes = 256 * 1024
 )
+
+// validateSSHExecCommand rejects commands that cannot be legitimate scanner
+// invocations. The command runs on the target via the remote shell
+// (go/command-injection sink), so NUL bytes — which would truncate or confuse
+// the remote exec — and oversized payloads are refused before dialing.
+func validateSSHExecCommand(command string) error {
+	if command == "" {
+		return fmt.Errorf("ssh exec command must not be empty")
+	}
+	if len(command) > maxSshExecCommandBytes {
+		return fmt.Errorf("ssh exec command exceeds %d bytes", maxSshExecCommandBytes)
+	}
+	if strings.IndexByte(command, 0) >= 0 {
+		return fmt.Errorf("ssh exec command must not contain NUL bytes")
+	}
+	return nil
+}
 
 // sshExecEnvelope is the request body for an SSH exec. Host and port come from the signed gateway certificate
 type sshExecEnvelope struct {
@@ -209,6 +231,9 @@ func runSSHCommand(ctx context.Context, client *ssh.Client, command string, outp
 }
 
 func doSSHExec(ctx context.Context, targetHost string, targetPort int, env sshExecEnvelope) (sshExecResult, error) {
+	if err := validateSSHExecCommand(env.Command); err != nil {
+		return sshExecResult{}, err
+	}
 	budget := sshCommandBudget(env.TimeoutMs, sshExecDefaultTimeout)
 	ctx, cancel := context.WithTimeout(ctx, budget)
 	defer cancel()

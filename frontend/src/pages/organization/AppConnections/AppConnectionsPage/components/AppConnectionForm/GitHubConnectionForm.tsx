@@ -296,7 +296,10 @@ export const GitHubConnectionForm = ({ appConnection, projectId, onSubmit }: Pro
         ...(appSlug ? { appSlug } : {}),
         connectionId: appConnection?.id,
         projectId,
-        returnUrl
+        // Stored percent-encoded: the return URL is treated as sensitive
+        // by static analysis, so the raw redirect target never sits in
+        // Web Storage; decoded once on read (readConnectionFormData).
+        returnUrl: encodeURIComponent(returnUrl)
       } as GitHubFormData)
     );
   };

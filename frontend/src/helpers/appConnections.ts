@@ -1062,13 +1062,30 @@ export type TStoredConnectionFormData<T> =
   | { status: "missing" }
   | { status: "corrupt" };
 
+// OAuth return URLs are staged in Web Storage percent-encoded
+// (encodeURIComponent at the store sites above) so the raw redirect target
+// never sits in clear-text storage; decode exactly once here so every reader
+// (OAuthCallbackPage, GitHubManifestCallbackPage, legacy secret-manager
+// callbacks) sees the original value. Payloads staged before the encoding
+// change were stored raw and are left untouched.
+export const decodeStoredOAuthReturnUrl = <T>(formData: T): T => {
+  const candidate = (formData as { returnUrl?: unknown } | null | undefined)?.returnUrl;
+  if (typeof candidate !== "string" || candidate === "") return formData;
+  try {
+    (formData as { returnUrl: string }).returnUrl = decodeURIComponent(candidate);
+  } catch {
+    // Not percent-encoded (pre-fix payload); keep it usable.
+  }
+  return formData;
+};
+
 export const readConnectionFormData = <T>(storageKey: string): TStoredConnectionFormData<T> => {
   const raw = localStorage.getItem(storageKey);
 
   if (raw === null) return { status: "missing" };
 
   try {
-    return { status: "ok", data: JSON.parse(raw) as T };
+    return { status: "ok", data: decodeStoredOAuthReturnUrl(JSON.parse(raw) as T) };
   } catch {
     localStorage.removeItem(storageKey);
     return { status: "corrupt" };

@@ -4,6 +4,7 @@ import { useNavigate, useSearch } from "@tanstack/react-router";
 import { PageTitle } from "@app/components/PageTitle";
 import { ROUTE_PATHS } from "@app/const/routes";
 import { useOrganization, useProject } from "@app/context";
+import { decodeStoredOAuthReturnUrl } from "@app/helpers/appConnections";
 import { useCreateAppConnection, useUpdateAppConnection } from "@app/hooks/api/appConnections";
 import { GitLabConnectionMethod } from "@app/hooks/api/appConnections/types/gitlab-connection";
 
@@ -47,7 +48,7 @@ export const GitLabOAuthCallbackPage = () => {
           return;
         }
 
-        const formData = JSON.parse(storedFormData);
+        const formData = decodeStoredOAuthReturnUrl(JSON.parse(storedFormData));
         localStorage.removeItem("gitlabConnectionFormData");
 
         // Prepare app connection data with OAuth credentials

@@ -88,6 +88,15 @@ export const GitHubManifestCallbackPage = () => {
         gitHubAppId
       };
       connectionForm.resumeWithGitHubAppId = gitHubAppId;
+      // Re-stage percent-encoded (mirrors the form store sites): returnUrl arrives here decoded
+      // via readConnectionFormData, and the raw redirect target must never sit in Web Storage.
+      if (typeof connectionForm.returnUrl === "string" && connectionForm.returnUrl !== "") {
+        try {
+          connectionForm.returnUrl = encodeURIComponent(connectionForm.returnUrl);
+        } catch {
+          // Keep the pre-existing value usable if encoding ever fails.
+        }
+      }
       localStorage.setItem(GITHUB_CONNECTION_FORM_STORAGE_KEY, JSON.stringify(connectionForm));
     }
 

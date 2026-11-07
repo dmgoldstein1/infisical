@@ -40,6 +40,7 @@ import { createNotification } from "@app/components/notifications";
 import { ProjectPermissionCan } from "@app/components/permissions";
 import {
   hasSecretReference,
+  ResolvedReferenceTooltipContent,
   ResolvedSecretValuePopover,
   SecretReferenceTree
 } from "@app/components/secrets/SecretReferenceDetails";
@@ -828,6 +829,21 @@ export const SecretEditTableRow = ({
     }
   };
 
+  const [isAnnotationSaveRequested, setIsAnnotationSaveRequested] = useState(false);
+  const canSaveAnnotationsDirectly = isBatchMode && Boolean(onPendingSave) && !isPendingCreate;
+  const requestAnnotationSave = useCallback(() => setIsAnnotationSaveRequested(true), []);
+  useEffect(() => {
+    if (!isAnnotationSaveRequested) return;
+    setIsAnnotationSaveRequested(false);
+    savePendingRow()
+      .then(() => {
+        setIsCommentOpen(false);
+        setIsTagOpen(false);
+        setIsMetadataOpen(false);
+      })
+      .catch(() => undefined);
+  }, [isAnnotationSaveRequested]);
+
   // Reset form when a pending change is externally discarded or saved (e.g. CommitForm discard
   // button or this row's inline save).
   const prevHasPendingRef = useRef(hasPendingChange);
@@ -1056,6 +1072,10 @@ export const SecretEditTableRow = ({
   const isDirtyState = Boolean(
     isDirty && (dirtyFields.key || dirtyFields.value) && !isImportedSecret && !isBatchMode
   );
+
+  useEffect(() => {
+    if (isDirtyState || hasPendingValueChange) setIsResolvedValueOpen.off();
+  }, [isDirtyState, hasPendingValueChange]);
 
   const handleEditSecret = async ({
     secretValue,
@@ -1373,6 +1393,8 @@ export const SecretEditTableRow = ({
         onClose={() => setIsCommentOpen(false)}
         isBatchMode={isBatchMode}
         onCommentChange={handleCommentChange}
+        onBatchSave={canSaveAnnotationsDirectly ? requestAnnotationSave : undefined}
+        isBatchSavePending={isSavingPendingChange}
       />
     </PopoverContent>
   );
@@ -1397,12 +1419,13 @@ export const SecretEditTableRow = ({
           <DropdownMenuTrigger asChild>
             <IconButton
               aria-label="Annotate secret"
+              tabIndex={-1}
               variant={isSingleEnvView ? "ghost-muted" : "ghost"}
               size={isSingleEnvView ? "2xs" : "xs"}
               className={
                 isSingleEnvView
                   ? twMerge(
-                      "transition-opacity duration-150 focus-visible:opacity-100 motion-reduce:transition-none [@media(hover:hover)]:opacity-0 [@media(hover:hover)]:group-focus-within:opacity-100 [@media(hover:hover)]:group-hover:opacity-100",
+                      "-mr-1 transition-opacity duration-150 focus-visible:opacity-100 motion-reduce:transition-none [@media(hover:hover)]:opacity-0 [@media(hover:hover)]:group-focus-within:opacity-100 [@media(hover:hover)]:group-hover:opacity-100",
                       isAnnotating && "[@media(hover:hover)]:opacity-100"
                     )
                   : "size-7 border-0"
@@ -1498,6 +1521,8 @@ export const SecretEditTableRow = ({
             onClose={() => setIsTagOpen(false)}
             isBatchMode={isBatchMode}
             onTagsChange={handleTagsChange}
+            onBatchSave={canSaveAnnotationsDirectly ? requestAnnotationSave : undefined}
+            isBatchSavePending={isSavingPendingChange}
           />
         </PopoverContent>
       </Popover>
@@ -1528,6 +1553,8 @@ export const SecretEditTableRow = ({
             onClose={() => setIsMetadataOpen(false)}
             isBatchMode={isBatchMode}
             onMetadataChange={handleMetadataChange}
+            onBatchSave={canSaveAnnotationsDirectly ? requestAnnotationSave : undefined}
+            isBatchSavePending={isSavingPendingChange}
           />
         </PopoverContent>
       </Popover>
@@ -1625,7 +1652,6 @@ export const SecretEditTableRow = ({
           </TooltipContent>
         </Tooltip>
       )}
-      {isSingleEnvView && annotateMenu}
     </div>
   );
 
@@ -1662,16 +1688,6 @@ export const SecretEditTableRow = ({
           )}
           style={isFieldActive && actionBarWidth ? { paddingRight: actionBarWidth } : undefined}
         >
-          {isFieldActive && !secretValueHidden && !isCreatable && secretHasReference && (
-            <ResolvedSecretValuePopover
-              environment={environment}
-              secretPath={secretPath}
-              secretKey={secretName}
-              open={isResolvedValueOpen}
-              onOpenChange={setIsResolvedValueOpen.toggle}
-              isDisabled={isDirtyState || hasPendingValueChange}
-            />
-          )}
           <Controller
             control={control}
             name="value"
@@ -1696,7 +1712,13 @@ export const SecretEditTableRow = ({
                 isImport={isImportedSecret}
                 canEditButNotView={secretValueHidden && !isManagedSecret}
                 onFocus={() => setIsFieldFocused.on()}
-                containerClassName={secretHasReference && isFieldActive ? "pl-6" : ""}
+                renderReferenceTooltip={(reference) => (
+                  <ResolvedReferenceTooltipContent
+                    environment={fetchSharedValueParams.environment}
+                    secretPath={fetchSharedValueParams.secretPath}
+                    reference={reference}
+                  />
+                )}
                 onBlur={() => {
                   field.onBlur();
                   setIsFieldFocused.off();
@@ -1780,7 +1802,8 @@ export const SecretEditTableRow = ({
             "absolute z-20",
             "flex items-center gap-0.5 rounded-md border border-border bg-container-hover px-0.5 py-0.5 shadow-md",
             TABLE_ROW_ACTION_BAR_VISIBILITY_CLASS_NAME,
-            (isDropdownOpen || isAnnotateMenuOpen) && TABLE_ROW_ACTION_BAR_FORCE_VISIBLE_CLASS_NAME,
+            (isDropdownOpen || isAnnotateMenuOpen || isResolvedValueOpen) &&
+              TABLE_ROW_ACTION_BAR_FORCE_VISIBLE_CLASS_NAME,
             isSingleEnvView ? "top-[3px] right-0.5" : "-top-px -right-1.5"
           )}
         >
@@ -1882,6 +1905,16 @@ export const SecretEditTableRow = ({
                             : "Edit Value"}
             </TooltipContent>
           </Tooltip>
+          {!secretValueHidden && !isCreatable && secretHasReference && (
+            <ResolvedSecretValuePopover
+              environment={environment}
+              secretPath={secretPath}
+              secretKey={secretName}
+              open={isResolvedValueOpen}
+              onOpenChange={setIsResolvedValueOpen.toggle}
+              isDisabled={isDirtyState || hasPendingValueChange}
+            />
+          )}
           <Tooltip>
             <TooltipTrigger asChild>
               <IconButton
@@ -2422,6 +2455,7 @@ export const SecretEditTableRow = ({
               {annotationSlot}
             </div>
             <SecretLastEditedTime secret={lastEdited} field={timestampField} />
+            {annotateMenu}
           </div>
         </TableCell>
         <TableCell

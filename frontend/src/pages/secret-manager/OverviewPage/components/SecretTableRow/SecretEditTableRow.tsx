@@ -40,6 +40,7 @@ import { createNotification } from "@app/components/notifications";
 import { ProjectPermissionCan } from "@app/components/permissions";
 import {
   hasSecretReference,
+  ResolvedReferenceTooltipContent,
   ResolvedSecretValuePopover,
   SecretReferenceTree
 } from "@app/components/secrets/SecretReferenceDetails";
@@ -112,6 +113,7 @@ import {
 } from "@app/hooks/api/dashboard/queries";
 import { Reminder } from "@app/hooks/api/reminders/types";
 import { PendingAction } from "@app/hooks/api/secretFolders/types";
+import { showSecretWriteErrors } from "@app/hooks/api/secrets/errors";
 import { ProjectEnv, SecretType, SecretV3RawSanitized, WsTag } from "@app/hooks/api/types";
 import { hasSecretReadValueOrDescribePermission } from "@app/lib/fn/permission";
 import { AddShareSecretModal } from "@app/pages/organization/SecretSharingPage/components/ShareSecret/AddShareSecretModal";
@@ -192,7 +194,6 @@ type Props = {
   }[];
   isSecretPresent?: boolean;
   isSingleEnvView?: boolean;
-  onSecretRename?: (newName: string) => Promise<void>;
   isBatchMode?: boolean;
   isPendingCreate?: boolean;
   isPendingDelete?: boolean;
@@ -801,7 +802,7 @@ export const SecretEditTableRow = ({
     batchStore.getState().pendingChanges.secrets.find((c) => c.secretKey === secretName)?.id;
 
   const savePendingRow = async (knownPendingChangeId?: string) => {
-    if (!onPendingSave || isSavingPendingChangeRef.current) return;
+    if (!onPendingSave || isSavingPendingChangeRef.current) return false;
     isSavingPendingChangeRef.current = true;
     setIsSavingPendingChange.on();
     try {
@@ -822,11 +823,31 @@ export const SecretEditTableRow = ({
         if (!knownPendingChangeId) applyBatchEditsRef.current?.();
       }
       await onPendingSave(environment, secretName, pendingChangeId);
+    } catch (error) {
+      showSecretWriteErrors([{ error }]);
+      return false;
     } finally {
       isSavingPendingChangeRef.current = false;
       setIsSavingPendingChange.off();
     }
+    return true;
   };
+
+  const [isAnnotationSaveRequested, setIsAnnotationSaveRequested] = useState(false);
+  const canSaveAnnotationsDirectly = isBatchMode && Boolean(onPendingSave) && !isPendingCreate;
+  const requestAnnotationSave = useCallback(() => setIsAnnotationSaveRequested(true), []);
+  useEffect(() => {
+    if (!isAnnotationSaveRequested) return;
+    setIsAnnotationSaveRequested(false);
+    savePendingRow()
+      .then((isSaved) => {
+        if (!isSaved) return;
+        setIsCommentOpen(false);
+        setIsTagOpen(false);
+        setIsMetadataOpen(false);
+      })
+      .catch(() => undefined);
+  }, [isAnnotationSaveRequested]);
 
   // Reset form when a pending change is externally discarded or saved (e.g. CommitForm discard
   // button or this row's inline save).
@@ -933,12 +954,8 @@ export const SecretEditTableRow = ({
           text: `Multi-line encoding ${skipMultilineEncoding ? "disabled" : "enabled"}`
         });
       }
-    } catch (e) {
-      console.error(e);
-      createNotification({
-        type: "error",
-        text: "Failed to update multi-line encoding setting."
-      });
+    } catch (error) {
+      showSecretWriteErrors([{ error }]);
     }
   };
 
@@ -1008,21 +1025,26 @@ export const SecretEditTableRow = ({
 
     // Handle rename and/or value changes in a single mutation
     if ((sheetChanges || isKeyDirty || isValueDirty) && secretName) {
-      if (isCreatable) {
-        if (isValueDirty && (value || value === "")) {
-          await onSecretCreate(environment, secretName, value);
+      try {
+        if (isCreatable) {
+          if (isValueDirty && (value || value === "")) {
+            await onSecretCreate(environment, secretName, value);
+          }
+        } else {
+          await onSecretUpdate({
+            env: environment,
+            key: secretName,
+            value: value ?? undefined,
+            secretValueHidden,
+            type: SecretType.Shared,
+            secretId,
+            newSecretName: isKeyDirty ? key : undefined,
+            ...sheetChanges
+          });
         }
-      } else {
-        await onSecretUpdate({
-          env: environment,
-          key: secretName,
-          value: value ?? undefined,
-          secretValueHidden,
-          type: SecretType.Shared,
-          secretId,
-          newSecretName: isKeyDirty ? key : undefined,
-          ...sheetChanges
-        });
+      } catch (error) {
+        showSecretWriteErrors([{ error }]);
+        return false;
       }
     }
     if (invocation !== valueSheetFlow.current) return false;
@@ -1086,7 +1108,7 @@ export const SecretEditTableRow = ({
         newSecretName: newKey,
         ...sheetChanges
       });
-      if (isBatchMode) await savePendingRow(pendingChangeId);
+      if (isBatchMode && !(await savePendingRow(pendingChangeId))) return;
       if (invocation !== valueSheetFlow.current || confirmation !== editConfirmation.current)
         return;
       if (!secretValueHidden) {
@@ -1102,6 +1124,8 @@ export const SecretEditTableRow = ({
         });
       }
       handlePopUpClose("editSecret");
+    } catch (error) {
+      showSecretWriteErrors([{ error }]);
     } finally {
       setIsEditing.off();
     }
@@ -1248,7 +1272,7 @@ export const SecretEditTableRow = ({
       });
       if (invocation !== valueSheetFlow.current) return;
       resetSheetFields(changes);
-      await savePendingRow(pendingChangeId);
+      if (!(await savePendingRow(pendingChangeId))) return;
     } else {
       const completed = await handleFormSubmit({ value: changes.value, sheetChanges: changes });
       if (!completed) return;
@@ -1377,6 +1401,8 @@ export const SecretEditTableRow = ({
         onClose={() => setIsCommentOpen(false)}
         isBatchMode={isBatchMode}
         onCommentChange={handleCommentChange}
+        onBatchSave={canSaveAnnotationsDirectly ? requestAnnotationSave : undefined}
+        isBatchSavePending={isSavingPendingChange}
       />
     </PopoverContent>
   );
@@ -1401,12 +1427,13 @@ export const SecretEditTableRow = ({
           <DropdownMenuTrigger asChild>
             <IconButton
               aria-label="Annotate secret"
+              tabIndex={-1}
               variant={isSingleEnvView ? "ghost-muted" : "ghost"}
               size={isSingleEnvView ? "2xs" : "xs"}
               className={
                 isSingleEnvView
                   ? twMerge(
-                      "transition-opacity duration-150 focus-visible:opacity-100 motion-reduce:transition-none [@media(hover:hover)]:opacity-0 [@media(hover:hover)]:group-focus-within:opacity-100 [@media(hover:hover)]:group-hover:opacity-100",
+                      "-mr-1 transition-opacity duration-150 focus-visible:opacity-100 motion-reduce:transition-none [@media(hover:hover)]:opacity-0 [@media(hover:hover)]:group-focus-within:opacity-100 [@media(hover:hover)]:group-hover:opacity-100",
                       isAnnotating && "[@media(hover:hover)]:opacity-100"
                     )
                   : "size-7 border-0"
@@ -1502,6 +1529,8 @@ export const SecretEditTableRow = ({
             onClose={() => setIsTagOpen(false)}
             isBatchMode={isBatchMode}
             onTagsChange={handleTagsChange}
+            onBatchSave={canSaveAnnotationsDirectly ? requestAnnotationSave : undefined}
+            isBatchSavePending={isSavingPendingChange}
           />
         </PopoverContent>
       </Popover>
@@ -1532,6 +1561,8 @@ export const SecretEditTableRow = ({
             onClose={() => setIsMetadataOpen(false)}
             isBatchMode={isBatchMode}
             onMetadataChange={handleMetadataChange}
+            onBatchSave={canSaveAnnotationsDirectly ? requestAnnotationSave : undefined}
+            isBatchSavePending={isSavingPendingChange}
           />
         </PopoverContent>
       </Popover>
@@ -1629,7 +1660,6 @@ export const SecretEditTableRow = ({
           </TooltipContent>
         </Tooltip>
       )}
-      {isSingleEnvView && annotateMenu}
     </div>
   );
 
@@ -1690,6 +1720,13 @@ export const SecretEditTableRow = ({
                 isImport={isImportedSecret}
                 canEditButNotView={secretValueHidden && !isManagedSecret}
                 onFocus={() => setIsFieldFocused.on()}
+                renderReferenceTooltip={(reference) => (
+                  <ResolvedReferenceTooltipContent
+                    environment={fetchSharedValueParams.environment}
+                    secretPath={fetchSharedValueParams.secretPath}
+                    reference={reference}
+                  />
+                )}
                 onBlur={() => {
                   field.onBlur();
                   setIsFieldFocused.off();
@@ -2426,6 +2463,7 @@ export const SecretEditTableRow = ({
               {annotationSlot}
             </div>
             <SecretLastEditedTime secret={lastEdited} field={timestampField} />
+            {annotateMenu}
           </div>
         </TableCell>
         <TableCell

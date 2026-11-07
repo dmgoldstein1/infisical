@@ -65,4 +65,20 @@ describe("OAuth return URL storage encoding (CodeQL js/clear-text-storage-of-sen
     expect(decodeStoredOAuthReturnUrl({ name: "conn" })).toEqual({ name: "conn" });
     expect(decodeStoredOAuthReturnUrl(null)).toBeNull();
   });
+
+  it("re-staging a decoded returnUrl restores the exact encoded payload (GitHubManifestCallbackPage invariant)", () => {
+    // The manifest callback reads via readConnectionFormData (decoded) and must re-stage
+    // percent-encoded; this pins that decode->encode round-trips, including tricky inputs.
+    for (const returnUrl of [
+      "/organization/org-123/app-connections?tab=xyz",
+      "/org/a b/c?d=e#f",
+      "/org/%20pre-encoded",
+      "/org/bare-%-percent"
+    ]) {
+      const staged = encodeURIComponent(returnUrl);
+      const decoded = decodeStoredOAuthReturnUrl({ returnUrl: staged }).returnUrl;
+      expect(decoded).toBe(returnUrl);
+      expect(encodeURIComponent(decoded)).toBe(staged);
+    }
+  });
 });

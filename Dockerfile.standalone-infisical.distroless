@@ -46,7 +46,7 @@
 
 ARG NODE_IMAGE=node:26.10.0-trixie-slim
 ARG GOLANG_IMAGE=golang:1.26-trixie
-ARG INFISICAL_CLI_VERSION=0.43.136
+ARG INFISICAL_CLI_VERSION=0.45.4
 # Pinned by digest for a reproducible, signature-verifiable runtime.
 ARG DISTROLESS_NODE=gcr.io/distroless/nodejs26-debian13:nonroot@sha256:044d090d0c3ccfd30722126ebe46704885698970c8a303419dc0d704d628f0da
 

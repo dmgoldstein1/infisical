@@ -172,7 +172,7 @@
     "tsdown": "0.23.0",
     "tsx": "^4.23.15",
     "typescript": "^7.0.2",
-    "vitest": "^3.2.6"
+    "vitest": "^4.1.12"
   },
   "dependencies": {
     "@aws-sdk/client-acm": "^3.1030.0",

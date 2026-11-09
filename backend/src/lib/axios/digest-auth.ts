@@ -37,7 +37,7 @@ export const createDigestAuthRequestInterceptor = (
 
       const response = crypto.hashing().md5(`${ha1}:${nonce}:${nonceCount}:${cnonce}:auth:${ha2}`, DigestType.Hex);
 
-      const authorization = `Digest username="${username}",realm="${realm}",nonce="${nonce}",uri="${path}",qop="auth",algorithm="MD5",response="${response}",nc="${nonceCount}",cnonce="${cnonce}"`;
+      const authorization = `Digest username="${username}",realm="${realm}",nonce="${nonce}",uri="${path}",qop="auth",algorithm="MD5",response="${response}",nc=${nonceCount},cnonce="${cnonce}"`;
 
       if (opts.headers) {
         // eslint-disable-next-line

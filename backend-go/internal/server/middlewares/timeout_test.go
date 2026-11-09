@@ -287,3 +287,16 @@ func TestTimeoutWriter_PreservesResponseBytes(t *testing.T) {
 	assert.Equal(t, len(payload), n)
 	assert.Equal(t, payload, rec.Body.Bytes())
 }
+
+func TestTimeoutWriter_Write_PassesBytesUnmodified(t *testing.T) {
+	t.Parallel()
+
+	payload := []byte(`{"html":"<script>alert(1)</script>","q":"a&b\"c"}` + "\x00\x01\x02")
+	rec := httptest.NewRecorder()
+	tw := &timeoutWriter{ResponseWriter: rec}
+
+	n, err := tw.Write(payload)
+	require.NoError(t, err)
+	assert.Equal(t, len(payload), n)
+	assert.Equal(t, payload, rec.Body.Bytes())
+}

@@ -57,7 +57,7 @@ func startRedis(ctx context.Context, networkName string) (*RedisService, error) 
 		return nil, fmt.Errorf("getting redis port: %w", err)
 	}
 
-	url := fmt.Sprintf("redis://%s:%d", host, mappedPort.Int())
+	url := fmt.Sprintf("redis://%s:%d", host, int(mappedPort.Num()))
 
 	return &RedisService{
 		container: container,

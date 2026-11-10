@@ -60,7 +60,7 @@ func startPostgres(ctx context.Context, networkName string) (*PostgresService, e
 		return nil, fmt.Errorf("getting postgres port: %w", err)
 	}
 
-	port := mappedPort.Int()
+	port := int(mappedPort.Num())
 	uri := fmt.Sprintf("postgres://%s:%s@%s:%d/%s?sslmode=disable", pgUser, pgPassword, host, port, pgDB)
 
 	return &PostgresService{

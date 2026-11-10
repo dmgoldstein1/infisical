@@ -8,7 +8,11 @@ import { generateRootEncryptionKey, getKeyRemovalEligibleAt, resolveKekBuffer } 
 // only exists once initLogger has run.
 beforeAll(async () => {
   initLogger();
-  await crypto.initialize({ findById: async () => null } as never, {} as never, {} as never, {} as never);
+  // The FIPS boot path (matrix api-tests image) reads ENCRYPTION_KEY from the
+  // passed envCfg instead of the process env, so forward the container's key.
+  await crypto.initialize({ findById: async () => null } as never, { isActive: async () => false } as never, { findById: async () => null } as never, {
+    ENCRYPTION_KEY: process.env.ENCRYPTION_KEY
+  } as never);
 });
 
 describe("generateRootEncryptionKey", () => {

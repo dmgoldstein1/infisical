@@ -125,7 +125,7 @@ func startNodeJS(ctx context.Context, networkName string, files []testcontainers
 		return nil, fmt.Errorf("getting nodejs port: %w", err)
 	}
 
-	baseURL := fmt.Sprintf("http://%s:%d", host, mappedPort.Int())
+	baseURL := fmt.Sprintf("http://%s:%d", host, int(mappedPort.Num()))
 
 	return &NodeJSService{
 		container: container,

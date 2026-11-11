@@ -80,7 +80,7 @@ describe("HTTP digest auth (CodeQL md5 disposition)", () => {
     // Independently recompute the RFC 2617 expected response from the
     // challenge parameters echoed back in the header.
     const cnonce = authorization.match(/cnonce="([^"]+)"/)?.[1] as string;
-    const nc = authorization.match(/nc=([0-9a-f]{8})/)?.[1] as string;
+    const nc = authorization.match(/nc="?([0-9a-f]{8})/)?.[1] as string;
     const md5 = (s: string) => createHash("md5").update(s).digest("hex");
     const ha1 = md5(`${username}:${realm}:${password}`);
     const ha2 = md5(`GET:${path}`);

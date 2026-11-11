@@ -295,6 +295,10 @@ func startProxyServer(cmd *cobra.Command, args []string) {
 		// -- Proxy Response --
 
 		proxy.CopyHeaders(w.Header(), resp.Header)
+		// Defense-in-depth against reflected content served as HTML (go/reflected-xss):
+		// refuse MIME-sniffing unless the upstream set its own framing policy.
+		// Bodies stay byte-identical (streaming preserved).
+		proxy.SetNosniffIfAbsent(w.Header())
 		w.WriteHeader(resp.StatusCode)
 
 		// For streaming endpoints, stream directly instead of buffering

@@ -66,3 +66,39 @@ export const hasNestedQuantifier = (source: string): boolean => {
   }
   return false;
 };
+
+// Rejects regex constructs the nested-quantifier screen above does not see
+// but that are also classic ReDoS/escape vectors in caller-supplied patterns:
+// lookarounds ((?=, (?!, (?<=, (?<!) and backreferences (\1..\9). The BDD
+// harness only needs simple path matchers, so legitimate definitions never
+// use these. Escaped and character-class occurrences are not constructs.
+export const hasRiskyConstruct = (source: string): boolean => {
+  let inClass = false;
+  let escaped = false;
+  for (let i = 0; i < source.length; i++) {
+    const ch = source[i];
+    if (escaped) {
+      // A backreference is an escaped non-zero digit outside a class.
+      if (!inClass && ch >= "1" && ch <= "9") return true;
+      escaped = false;
+      continue;
+    }
+    if (ch === "\\") {
+      escaped = true;
+      continue;
+    }
+    if (ch === "[") {
+      inClass = true;
+      continue;
+    }
+    if (ch === "]") {
+      inClass = false;
+      continue;
+    }
+    if (inClass) continue;
+    if (ch === "(" && source[i + 1] === "?" && (source[i + 2] === "=" || source[i + 2] === "!" || source[i + 2] === "<")) {
+      return true;
+    }
+  }
+  return false;
+};

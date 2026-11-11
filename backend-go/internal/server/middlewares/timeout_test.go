@@ -287,3 +287,26 @@ func TestTimeoutWriter_PreservesResponseBytes(t *testing.T) {
 	assert.Equal(t, len(payload), n)
 	assert.Equal(t, payload, rec.Body.Bytes())
 }
+
+func TestTimeout_MaliciousRequestIDDropped(t *testing.T) {
+	t.Parallel()
+
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		<-r.Context().Done() // wait for timeout
+	})
+
+	timeoutMiddleware := Timeout(10 * time.Millisecond)
+	wrapped := requestid.Middleware("req-")(timeoutMiddleware(handler))
+
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/test", http.NoBody)
+	req.Header.Set(requestid.Header, `"><script>alert(1)</script>`)
+	rec := httptest.NewRecorder()
+
+	wrapped.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusGatewayTimeout, rec.Code)
+	assert.NotContains(t, rec.Body.String(), "<script>")
+	var resp errorResponse
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	assert.Equal(t, "", resp.ReqID)
+}

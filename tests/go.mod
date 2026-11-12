@@ -1,6 +1,6 @@
 module github.com/Infisical/infisical/tests
 
-go 1.27.3
+go 1.27.4
 
 require (
 	github.com/Infisical/infisical/tests/clients/api v0.0.0

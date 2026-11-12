@@ -283,6 +283,15 @@ func CopyHeaders(dst, src http.Header) {
 	}
 }
 
+// SetNosniffIfAbsent marks a relayed response as non-sniffable unless the
+// upstream set its own framing policy (go/reflected-xss defense-in-depth).
+// Bodies are untouched, so streaming/byte-fidelity is preserved.
+func SetNosniffIfAbsent(dst http.Header) {
+	if dst.Get("X-Content-Type-Options") == "" {
+		dst.Set("X-Content-Type-Options", "nosniff")
+	}
+}
+
 func ExtractTokenFromRequest(r *http.Request) string {
 	authHeader := r.Header.Get("Authorization")
 	if authHeader == "" {

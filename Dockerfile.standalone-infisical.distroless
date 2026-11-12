@@ -46,7 +46,7 @@
 
 ARG NODE_IMAGE=node:26.10.0-trixie-slim
 ARG GOLANG_IMAGE=golang:1.26-trixie
-ARG INFISICAL_CLI_VERSION=0.43.136
+ARG INFISICAL_CLI_VERSION=0.44.12
 # Pinned by digest for a reproducible, signature-verifiable runtime.
 ARG DISTROLESS_NODE=gcr.io/distroless/nodejs26-debian13:nonroot@sha256:044d090d0c3ccfd30722126ebe46704885698970c8a303419dc0d704d628f0da
 
@@ -193,6 +193,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       libaio1t64 \
       curl \
       wget \
+      zlib1g \
     && curl -1sLf 'https://artifacts-cli.infisical.com/setup.deb.sh' | bash \
     && apt-get update && apt-get install -y --no-install-recommends "infisical=${INFISICAL_CLI_VERSION}" \
     && rm -rf /var/lib/apt/lists/*

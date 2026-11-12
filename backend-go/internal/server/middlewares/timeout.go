@@ -4,11 +4,17 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"regexp"
 	"sync"
 	"time"
 
 	"github.com/infisical/api/internal/libs/requestid"
 )
+
+// reqIDAllowlist bounds request IDs echoed in error bodies to the opaque
+// correlation-token alphabet. The ID originates from the X-Request-Id header;
+// anything outside the alphabet is dropped rather than echoed.
+var reqIDAllowlist = regexp.MustCompile(`^[A-Za-z0-9_.:/-]{1,128}$`)
 
 // Timeout returns middleware that cancels the request context after the given duration.
 // If the handler doesn't complete in time, a 504 Gateway Timeout is returned.
@@ -37,6 +43,9 @@ func Timeout(duration time.Duration) func(http.Handler) http.Handler {
 					if !tw.wroteHeader {
 						tw.timedOut = true
 						reqID := requestid.FromContext(r.Context())
+						if !reqIDAllowlist.MatchString(reqID) {
+							reqID = ""
+						}
 						tw.ResponseWriter.Header().Set("Content-Type", "application/json")
 						// Defense-in-depth at this error sink: the request ID
 						// echoed in the JSON body is request-derived, so opt

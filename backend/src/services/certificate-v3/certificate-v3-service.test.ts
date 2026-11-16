@@ -1730,7 +1730,9 @@ describe("CertificateV3Service", () => {
             events.push("notify");
           })
         } as never);
-        const runTransaction = vi.mocked(mockCertificateRequestDAL.transaction).getMockImplementation()!;
+        const runTransaction = vi.mocked(mockCertificateRequestDAL.transaction).getMockImplementation() as unknown as (
+          callback: never
+        ) => Promise<unknown>;
         vi.mocked(mockCertificateRequestDAL.transaction).mockImplementation((async (callback: never) => {
           const result: unknown = await runTransaction(callback);
           events.push("commit");

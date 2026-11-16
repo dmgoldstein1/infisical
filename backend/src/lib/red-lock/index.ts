@@ -1,7 +1,7 @@
 /* eslint-disable */
 // Source code credits: https://github.com/mike-marcacci/node-redlock
 // Taken to avoid external dependency
-import { EventEmitter } from "events";
+import { EventEmitter } from "node:events";
 import { Redis as IORedisClient, Cluster as IORedisCluster } from "ioredis";
 
 import { crypto } from "@app/lib/crypto/cryptography";

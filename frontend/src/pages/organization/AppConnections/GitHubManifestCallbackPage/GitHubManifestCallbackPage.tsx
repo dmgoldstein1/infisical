@@ -46,7 +46,12 @@ export const GitHubManifestCallbackPage = () => {
       connectionForm = null;
     }
 
-    const returnUrl = connectionForm?.returnUrl;
+    const rawReturnUrl = connectionForm?.returnUrl ?? "";
+    // Only honor the same-origin path this browser staged before leaving for GitHub. Anything else
+    // (an absolute URL planted in storage by another tab) falls back to the default page instead of
+    // becoming an open redirect.
+    const returnUrl =
+      rawReturnUrl.startsWith("/") && !rawReturnUrl.startsWith("//") ? rawReturnUrl : "";
 
     const navigateBack = (reopenForm: boolean) => {
       if (returnUrl) {
@@ -82,21 +87,15 @@ export const GitHubManifestCallbackPage = () => {
 
     // The GitHub App is already created at this point. Mark the in-progress connection form so it
     // resumes with the new app selected, then send the user back to it to finish the connection.
+    // The return URL above is consumed from memory; drop it from the persisted form so the redirect
+    // target does not remain in Web Storage at rest.
     if (connectionForm) {
       connectionForm.credentials = {
         ...(connectionForm.credentials ?? {}),
         gitHubAppId
       };
       connectionForm.resumeWithGitHubAppId = gitHubAppId;
-      // Re-stage percent-encoded (mirrors the form store sites): returnUrl arrives here decoded
-      // via readConnectionFormData, and the raw redirect target must never sit in Web Storage.
-      if (typeof connectionForm.returnUrl === "string" && connectionForm.returnUrl !== "") {
-        try {
-          connectionForm.returnUrl = encodeURIComponent(connectionForm.returnUrl);
-        } catch {
-          // Keep the pre-existing value usable if encoding ever fails.
-        }
-      }
+      delete connectionForm.returnUrl;
       localStorage.setItem(GITHUB_CONNECTION_FORM_STORAGE_KEY, JSON.stringify(connectionForm));
     }
 

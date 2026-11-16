@@ -21,7 +21,7 @@
     "oidc-provider": {
       "koa": ">=3.1.2"
     },
-    "qs": "^6.16.0",
+    "qs": "^6.16.1",
     "proxy-addr": "^2.0.8",
     "body-parser": "^1.20.9",
     "nanoid": "^5.1.16",

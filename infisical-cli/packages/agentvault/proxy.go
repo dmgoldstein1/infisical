@@ -455,7 +455,11 @@ func (ps *proxyServer) forwardHTTP(w http.ResponseWriter, r *http.Request, schem
 	// The status line is already on the wire, so a failure part way through the body cannot be reported
 	// as a status. Returning normally would have net/http finish the chunked encoding and hand the agent
 	// a well-formed truncated 200; aborting drops the connection so the agent sees a failure instead.
-	// httputil.ReverseProxy does the same for the same reason.
+	// Defense-in-depth against reflected content served as HTML: refuse MIME-sniffing unless the
+	// upstream explicitly set its own framing policy. Bodies stay byte-identical (streaming preserved).
+	if dst.Get("X-Content-Type-Options") == "" {
+		dst.Set("X-Content-Type-Options", "nosniff")
+	}
 	w.WriteHeader(resp.StatusCode)
 	fw := &flushingWriter{ResponseWriter: w, rc: http.NewResponseController(w)}
 	if _, copyErr := io.Copy(fw, resp.Body); copyErr != nil {

@@ -529,6 +529,11 @@ func (ps *proxyServer) forwardHTTP(w http.ResponseWriter, r *http.Request, schem
 	}
 	// Relaying via ResponseWriter (rather than the old byte-transparent resp.Write) means Go adds a Date
 	// header and, when the upstream omitted Content-Type, sniffs one. Accepted as standard proxy behavior.
+	// Defense-in-depth against reflected content served as HTML: refuse MIME-sniffing unless the
+	// upstream explicitly set its own framing policy. Bodies stay byte-identical (streaming preserved).
+	if dst.Get("X-Content-Type-Options") == "" {
+		dst.Set("X-Content-Type-Options", "nosniff")
+	}
 	w.WriteHeader(resp.StatusCode)
 	// Flush per chunk so streamed responses (e.g. SSE) reach the client instead of buffering.
 	_, _ = io.Copy(flushingWriter{w}, resp.Body)

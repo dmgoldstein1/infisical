@@ -291,3 +291,37 @@ func TestAlterPasswordStatementRejectsQuotedPasswords(t *testing.T) {
 		t.Fatal("a current password containing a double quote must be rejected")
 	}
 }
+
+// CodeQL go/sql-injection pin: passwords ride inside the double-quoted
+// secret, so overlong or control-character secrets are rejected too.
+func TestAlterPasswordStatementRejectsPasswordSmuggling(t *testing.T) {
+	base := sqlRotateParams{TargetUsername: "APP_USER", NewPassword: "NewPw_123"}
+	base.Dialect = "oracle"
+	base.Username = "APP_USER"
+	base.Password = "OldPw_1"
+
+	long := make([]byte, 129)
+	for i := range long {
+		long[i] = 'a'
+	}
+	for name, mutate := range map[string]func(*sqlRotateParams){
+		"newline in new password":      func(p *sqlRotateParams) { p.NewPassword = "NewPw\n123" },
+		"carriage return in password":  func(p *sqlRotateParams) { p.Password = "OldPw\r1" },
+		"nul in new password":          func(p *sqlRotateParams) { p.NewPassword = "NewPw\x00123" },
+		"overlong new password":        func(p *sqlRotateParams) { p.NewPassword = string(long) },
+		"overlong current password":    func(p *sqlRotateParams) { p.Password = string(long) },
+	} {
+		p := base
+		mutate(&p)
+		if _, err := alterPasswordStatement(p, p.TargetUsername, p.Username, true); err == nil {
+			t.Fatalf("%s must be rejected", name)
+		}
+	}
+
+	ok := base
+	ok.NewPassword = "NewPw_123!@#"
+	ok.Password = "OldPw_1$%^"
+	if _, err := alterPasswordStatement(ok, ok.TargetUsername, ok.Username, true); err != nil {
+		t.Fatalf("printable symbols must stay allowed: %v", err)
+	}
+}

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { hasNestedQuantifier } from "./bdd-nock-regex-guard";
+import { hasNestedQuantifier, hasRiskyConstruct } from "./bdd-nock-regex-guard";
 
 describe("bdd-nock regex guard (CodeQL js/regex-injection hardening)", () => {
   it.each([
@@ -28,5 +28,13 @@ describe("bdd-nock regex guard (CodeQL js/regex-injection hardening)", () => {
     ""
   ])("allows benign source %s", (source) => {
     expect(hasNestedQuantifier(source)).toBe(false);
+  });
+
+  it.each(["(a)(b)\\1", "(?=a)b", "(?!a)b", "(?<=a)b", "(?<!a)b"])("rejects risky construct %s", (source) => {
+    expect(hasRiskyConstruct(source)).toBe(true);
+  });
+
+  it.each(["^/api/v1/secrets.*$", "(foo|bar)", "\\d+", "[(?=]x", "\\\\1"])("allows benign source for risky screen %s", (source) => {
+    expect(hasRiskyConstruct(source)).toBe(false);
   });
 });

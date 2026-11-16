@@ -144,6 +144,22 @@ func validateOracleRotateParams(params sqlRotateParams) error {
 	if !validOracleUsername(params.TargetUsername) {
 		return fmt.Errorf("oracle username contains characters outside the allowed set")
 	}
+	// Passwords are interpolated as double-quoted Oracle secrets (DDL takes no
+	// bind parameters for passwords either), so besides the double-quote
+	// rejection above they are length-capped and control characters are
+	// rejected: a newline inside the quoted secret cannot break out of the
+	// statement, but it can smuggle log confusion, and overlong secrets are
+	// never legitimate for rotation (Oracle caps at 128 bytes).
+	for label, v := range map[string]string{"new password": params.NewPassword, "current password": params.Password} {
+		if len(v) > 128 {
+			return fmt.Errorf("oracle %s exceeds the maximum length", label)
+		}
+		for _, r := range v {
+			if r < 0x20 || r == 0x7f {
+				return fmt.Errorf("oracle %s contains control characters", label)
+			}
+		}
+	}
 	return nil
 }
 

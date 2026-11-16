@@ -7,7 +7,7 @@ import { logger } from "@app/lib/logger";
 import { verifyAuth } from "@app/server/plugins/auth/verify-auth";
 import { AuthMode } from "@app/services/auth/auth-type";
 
-import { hasNestedQuantifier } from "./bdd-nock-regex-guard";
+import { hasNestedQuantifier, hasRiskyConstruct } from "./bdd-nock-regex-guard";
 
 // When running in production, we don't want to even import nock, because it's not needed and it increases memory usage a lots.
 // It once caused an outage in the production environment.
@@ -56,7 +56,7 @@ export const registerBddNockRouter = async (server: FastifyZodProvider) => {
         // length and reject invalid patterns so a hostile definition cannot
         // lodge a catastrophic-backtracking expression.
         const source = (path as unknown as { regex: string } | undefined)?.regex ?? "";
-        if (source.length > 500) {
+        if (source.length > 200) {
           throw new ForbiddenRequestError({ message: "Invalid nock definition" });
         }
         let regex: RegExp;
@@ -65,7 +65,7 @@ export const registerBddNockRouter = async (server: FastifyZodProvider) => {
         } catch {
           throw new ForbiddenRequestError({ message: "Invalid nock definition" });
         }
-        if (hasNestedQuantifier(source)) {
+        if (hasNestedQuantifier(source) || hasRiskyConstruct(source)) {
           throw new ForbiddenRequestError({ message: "Invalid nock definition" });
         }
         return { ...rest, path: regex } as Definition;

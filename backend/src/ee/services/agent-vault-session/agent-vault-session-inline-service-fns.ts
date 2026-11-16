@@ -1,6 +1,5 @@
 import { z } from "zod";
 
-import { TAgentVaultSessionInlineServices } from "@app/db/schemas";
 import { BadRequestError, InternalServerError } from "@app/lib/errors";
 
 import { assertCustomHeadersDoNotShadowCredential } from "../agent-vault-access-bundle/agent-vault-transformation-fns";
@@ -32,6 +31,10 @@ import {
   toServiceTypeFields
 } from "../agent-vault/agent-vault-service-type-fns";
 import {
+  TAgentVaultInlineServiceRow,
+  TAgentVaultInlineServiceSecretsRow
+} from "./agent-vault-session-inline-service-dal";
+import {
   TAgentVaultInlineCredentialSummary,
   TAgentVaultInlineCustomHeaderSummary,
   TAgentVaultInlineServiceInput,
@@ -56,7 +59,8 @@ const InlineServiceSecretsSchema = z.object({
     ])
     .nullable(),
   customHeaders: z.string().array(),
-  substitutions: z.string().array()
+  substitutions: z.string().array(),
+  hookSecret: z.string().nullable()
 });
 
 export type TInlineServiceSecrets = z.infer<typeof InlineServiceSecretsSchema>;
@@ -70,10 +74,12 @@ export type TPreparedInlineService = {
   hostPattern: string | null;
   allowedMethods: AgentVaultHttpMethod[] | null;
   allowedPathPrefixes: string[] | null;
+  allowedTools: string[] | null;
   credentialConfig: TInlineCredentialConfig;
   customHeaders: TInlineCustomHeader[];
   substitutions: TInlineSubstitution[];
-  // Null when there is nothing to seal: a pass-through service with no custom headers or substitutions.
+  hookUrl: string | null;
+  // Null when there is nothing to seal: a pass-through service with no custom headers, substitutions or hook.
   secrets: TInlineServiceSecrets | null;
 };
 
@@ -87,6 +93,20 @@ export const inlineServiceDisplayName = ({
   name?: string | null;
   hostPattern?: string | null;
 }) => name || (hostPattern ?? "").split(",")[0].trim().toLowerCase().replace(/:443$/, "");
+
+/**
+ * A session's own service wins over a bundle service of the same name: the bundle's is left out of that session, so
+ * the agent, the proxy and its logs each see one service per name. Admins can add or rename bundle services freely
+ * while sessions are live, and only the sessions that sent a service by that name keep their own.
+ */
+export const withoutShadowedBundleServices = <T extends { name: string }>(
+  bundleServices: T[],
+  inlineServices: { name?: string | null; hostPattern?: string | null }[]
+) => {
+  if (!inlineServices.length) return bundleServices;
+  const inlineNames = new Set(inlineServices.map(inlineServiceDisplayName));
+  return bundleServices.filter((service) => !inlineNames.has(service.name));
+};
 
 const toInlineCredential = (
   credential: Exclude<TAgentVaultInlineServiceInput["credential"], { type: AgentVaultCredentialType.OAuth }>
@@ -144,12 +164,6 @@ const prepareInlineService = (input: TAgentVaultInlineServiceInput, position: nu
     tls: input.tls,
     allowedTools: input.allowedTools
   });
-  if (input.allowedTools?.length) {
-    throw new BadRequestError({
-      message:
-        "Services sent with a session can't limit an MCP server's tools, so leave out allowedTools. Add the MCP server to an access bundle to limit its tools."
-    });
-  }
 
   const { credential } = input;
   if (credential.type === AgentVaultCredentialType.OAuth) {
@@ -203,18 +217,21 @@ const prepareInlineService = (input: TAgentVaultInlineServiceInput, position: nu
     hostPattern,
     allowedMethods: input.allowedMethods ?? null,
     allowedPathPrefixes: input.allowedPathPrefixes ?? null,
+    allowedTools: input.allowedTools ?? null,
     credentialConfig,
     customHeaders: customHeaders.map((header) => ({ name: header.name, prefix: header.prefix ?? "" })),
     substitutions: substitutions.map((substitution) => ({
       placeholder: substitution.placeholder,
       surfaces: substitution.surfaces
     })),
+    hookUrl: input.hook?.url ?? null,
     secrets:
-      secret || customHeaders.length || substitutions.length
+      secret || customHeaders.length || substitutions.length || input.hook
         ? {
             credential: secret,
             customHeaders: customHeaders.map((header) => header.value),
-            substitutions: substitutions.map((substitution) => substitution.value)
+            substitutions: substitutions.map((substitution) => substitution.value),
+            hookSecret: input.hook?.signingSecret ?? null
           }
         : null
   };
@@ -302,7 +319,7 @@ export const assertNoAccessBundleConflicts = (
   });
 };
 
-export type TAgentVaultSessionInlineServiceSummaryRow = Omit<TAgentVaultSessionInlineServices, "encryptedSecrets">;
+export type TAgentVaultSessionInlineServiceSummaryRow = TAgentVaultInlineServiceRow;
 
 const toInlineCredentialSummary = (config: TInlineCredentialConfig): TInlineCredentialConfig => {
   switch (config.type) {
@@ -319,7 +336,12 @@ const toInlineCredentialSummary = (config: TInlineCredentialConfig): TInlineCred
 export const toInlineServiceSummary = (
   row: TAgentVaultSessionInlineServiceSummaryRow
 ): TAgentVaultInlineServiceSummary => {
-  const base = { id: row.id, name: inlineServiceDisplayName(row), description: row.description ?? null };
+  const base = {
+    id: row.id,
+    name: inlineServiceDisplayName(row),
+    description: row.description ?? null,
+    hook: row.hookUrl ? { url: row.hookUrl } : null
+  };
   const credential = toInlineCredentialSummary(row.credentialConfig as TInlineCredentialConfig);
   // Every mint checks the credential against the type, so this means a row written some other way.
   const unsupportedCredential = () =>
@@ -359,7 +381,36 @@ export const toInlineServiceSummary = (
   }
 };
 
-export const parseInlineServiceSecrets = (decrypted: unknown) => InlineServiceSecretsSchema.parse(decrypted);
+// Whether the service needs a sealed value to go out, its hook's signing secret included. One that does and has none
+// had its session end.
+const needsSecrets = (row: TAgentVaultInlineServiceRow) =>
+  (row.credentialConfig as TInlineCredentialConfig).type !== AgentVaultCredentialType.Passthrough ||
+  row.customHeaders.length > 0 ||
+  row.substitutions.length > 0 ||
+  Boolean(row.hookUrl);
+
+/**
+ * The service's sealed values, opened, in the order of the names and placeholders beside them. Null once its session
+ * ended and they were deleted, or when one is missing, so resolve never sends a half-built service.
+ */
+export const openInlineServiceSecrets = (
+  row: TAgentVaultInlineServiceSecretsRow,
+  decryptJson: (encrypted: Buffer) => unknown
+): TInlineServiceSecrets | null => {
+  if (row.secretsDeletedAt || !needsSecrets(row)) return null;
+  const isPassthrough = (row.credentialConfig as TInlineCredentialConfig).type === AgentVaultCredentialType.Passthrough;
+  if (!isPassthrough && !row.encryptedCredential) return null;
+  if (row.hookUrl && !row.encryptedHookSecret) return null;
+  const values = [...row.customHeaders, ...row.substitutions].map((entry) => entry.encryptedValue);
+  if (values.some((value) => !value)) return null;
+  const valueOf = (encrypted: Buffer | null) => (decryptJson(encrypted!) as { value: string }).value;
+  return InlineServiceSecretsSchema.parse({
+    credential: row.encryptedCredential ? decryptJson(row.encryptedCredential) : null,
+    customHeaders: row.customHeaders.map((header) => valueOf(header.encryptedValue)),
+    substitutions: row.substitutions.map((substitution) => valueOf(substitution.encryptedValue)),
+    hookSecret: row.encryptedHookSecret ? valueOf(row.encryptedHookSecret) : null
+  });
+};
 
 /**
  * Null when the service can't go out: it needs secrets and none are stored, which means its session ended and they
@@ -370,15 +421,10 @@ export const parseInlineServiceSecrets = (decrypted: unknown) => InlineServiceSe
  * An inline service as the list an agent reads describes it, built without decrypting anything. Left out when resolve
  * would leave it out: a service whose credential, custom headers or substitutions have no stored secrets to send.
  */
-export const toInlineServiceFacts = (row: TAgentVaultSessionInlineServices): TSessionServiceFacts | null => {
+export const toInlineServiceFacts = (row: TAgentVaultInlineServiceSecretsRow): TSessionServiceFacts | null => {
   const credentialConfig = row.credentialConfig as TInlineCredentialConfig;
-  const customHeaders = row.customHeaders as TInlineCustomHeader[];
-  const substitutions = row.substitutions as TInlineSubstitution[];
-  const needsSecrets =
-    credentialConfig.type !== AgentVaultCredentialType.Passthrough ||
-    customHeaders.length > 0 ||
-    substitutions.length > 0;
-  if (needsSecrets && !row.encryptedSecrets) return null;
+  const { customHeaders, substitutions } = row;
+  if (needsSecrets(row) && row.secretsDeletedAt) return null;
 
   let credential: TSessionServiceCredential = { type: "none" };
   if (credentialConfig.type === AgentVaultCredentialType.Bearer) {
@@ -396,8 +442,7 @@ export const toInlineServiceFacts = (row: TAgentVaultSessionInlineServices): TSe
     transport: getServiceTransport(row.config),
     allowedMethods: row.allowedMethods ?? null,
     allowedPathPrefixes: row.allowedPathPrefixes ?? null,
-    // An inline MCP server can't be limited to some of its tools, so the proxy filters none.
-    allowedTools: null,
+    allowedTools: row.allowedTools ?? null,
     credential,
     customHeaderNames: customHeaders.map((header) => header.name),
     substitutions: substitutions.map(({ placeholder, surfaces }) => ({ placeholder, surfaces })),
@@ -408,12 +453,11 @@ export const toInlineServiceFacts = (row: TAgentVaultSessionInlineServices): TSe
 };
 
 export const toResolvedInlineService = (
-  row: TAgentVaultSessionInlineServices,
+  row: TAgentVaultInlineServiceRow,
   secrets: TInlineServiceSecrets | null
 ): TResolvedService | null => {
   const credentialConfig = row.credentialConfig as TInlineCredentialConfig;
-  const customHeaders = row.customHeaders as TInlineCustomHeader[];
-  const substitutions = row.substitutions as TInlineSubstitution[];
+  const { customHeaders, substitutions } = row;
 
   let credential: TResolvedService["credential"];
   if (credentialConfig.type === AgentVaultCredentialType.Passthrough) {
@@ -460,18 +504,19 @@ export const toResolvedInlineService = (
   ) {
     return null;
   }
+  if (row.hookUrl && !secrets?.hookSecret) return null;
 
   return {
     id: row.id,
     name: inlineServiceDisplayName(row),
     accessBundleName: null,
+    accessBundleId: null,
     type: row.type as AgentVaultServiceType,
     hostPattern: row.hostPattern ?? null,
     native: toResolvedNativeTarget(row.type, row.config),
     allowedMethods: row.allowedMethods ?? null,
     allowedPathPrefixes: row.allowedPathPrefixes ?? null,
-    // An inline MCP server can't be limited to some of its tools, so the proxy filters none.
-    allowedTools: null,
+    allowedTools: row.allowedTools ?? null,
     credential,
     customHeaders: customHeaders.map((header, index) => ({ ...header, value: secrets!.customHeaders[index] })),
     substitutions: substitutions.map((substitution, index) => ({
@@ -479,6 +524,7 @@ export const toResolvedInlineService = (
       value: secrets!.substitutions[index]
     })),
     personalValuesMissing: false,
-    memberProvided: false
+    memberProvided: false,
+    hook: row.hookUrl ? { url: row.hookUrl, secret: secrets!.hookSecret! } : null
   };
 };

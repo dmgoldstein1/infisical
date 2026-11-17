@@ -898,7 +898,7 @@ const OverviewPageContent = () => {
     )
   );
   const canCreateSecretSyncs = Boolean(secretSyncSourceEnv);
-  const { pathPolicies, hasPathPolicies } = usePathAccessPolicies({
+  const { pathPolicies, hasPathPolicies, policies } = usePathAccessPolicies({
     secretPath,
     environment: singleEnvSlug
   });
@@ -5599,13 +5599,13 @@ const OverviewPageContent = () => {
       <AddShareSecretModal popUp={popUp} handlePopUpToggle={handlePopUpToggle} />
       {!!pathPolicies && pathPolicies.length > 0 && (
         <RequestAccessModal
-          policies={pathPolicies}
+          policies={policies}
           isOpen={popUp.requestAccess.isOpen}
           onOpenChange={() => {
             handlePopUpClose("requestAccess");
           }}
           selectedActions={popUp.requestAccess.data as ProjectPermissionActions[] | undefined}
-          secretPath={pathPolicies[0].secretPath}
+          secretPath={secretPath}
           environment={singleEnvSlug}
         />
       )}

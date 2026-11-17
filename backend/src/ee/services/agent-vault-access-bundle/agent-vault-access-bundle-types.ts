@@ -13,6 +13,7 @@ import {
   AgentVaultVariableReferenceField,
   TAgentVaultMemberProvidedField
 } from "../agent-vault/agent-vault-enums";
+import { TAgentVaultHookInput, TAgentVaultHookUpdate } from "../agent-vault/agent-vault-hook-fns";
 import { TAgentVaultServiceTypeFields } from "../agent-vault/agent-vault-service-type-fns";
 import { TAgentVaultAccessBundleOrderBy } from "./agent-vault-access-bundle-dal";
 
@@ -114,11 +115,12 @@ type TAgentVaultCustomHeaderSummary = { id: string; name: string; prefix: string
 // references those can hold.
 export type TAgentVaultServiceSummary = {
   id: string;
-  accessBundleId: string;
   name: string;
   description: string | null;
   createdAt: Date;
   updatedAt: Date;
+  // Left out for members.
+  hook?: { url: string } | null;
 } & (
   | (Extract<TAgentVaultServiceTypeFields, { type: AgentVaultServiceType.Http }> & {
       credential: Extract<
@@ -132,7 +134,6 @@ export type TAgentVaultServiceSummary = {
       variableReferences: TAgentVaultVariableReferenceSummary[];
     })
   | (Extract<TAgentVaultServiceTypeFields, { type: AgentVaultServiceType.Mcp }> & {
-      allowedTools: string[] | null;
       credential: TAgentVaultBearerCredentialSummary | TAgentVaultOauthCredentialSummary;
       customHeaders: TAgentVaultCustomHeaderSummary[];
       variableReferences: Exclude<
@@ -203,7 +204,8 @@ export type TAgentVaultSubstitutionUpdate = {
 export type TAgentVaultNativeTlsInput = { enabled?: boolean; verify?: boolean; ca?: string | null };
 
 export type TCreateServiceDTO = TAgentVaultProjectScoped & {
-  accessBundleId: string;
+  // Bundles to add the new service to in the same write.
+  accessBundleIds?: string[];
   type: AgentVaultServiceType;
   name: string;
   description?: string | null;
@@ -220,10 +222,10 @@ export type TCreateServiceDTO = TAgentVaultProjectScoped & {
   credential: TAgentVaultCredentialInput;
   customHeaders?: TAgentVaultCustomHeaderInput[];
   substitutions?: TAgentVaultSubstitutionInput[];
+  hook?: TAgentVaultHookInput;
 };
 
 export type TUpdateServiceDTO = TAgentVaultProjectScoped & {
-  accessBundleId: string;
   serviceId: string;
   // Must match the stored type, which never changes.
   type: AgentVaultServiceType;
@@ -245,12 +247,13 @@ export type TUpdateServiceDTO = TAgentVaultProjectScoped & {
   credential?: TAgentVaultCredentialUpdate;
   customHeaders?: TAgentVaultCustomHeaderUpdate[];
   substitutions?: TAgentVaultSubstitutionUpdate[];
+  // null removes the hook and its signing secret.
+  hook?: TAgentVaultHookUpdate | null;
 };
 
 // What the service sheet would save, so the tools are listed with the credential agents will use. On edit, a value
 // left out falls back to what the saved service stores, as on update.
 export type TListMcpToolsDTO = TAgentVaultProjectScoped & {
-  accessBundleId: string;
   serviceId?: string;
   serverUrl: string;
   transport: AgentVaultMcpTransport;
@@ -259,9 +262,26 @@ export type TListMcpToolsDTO = TAgentVaultProjectScoped & {
 };
 
 export type TDeleteServiceDTO = TAgentVaultProjectScoped & {
-  accessBundleId: string;
   serviceId: string;
 };
+
+export type TServiceByIdDTO = TAgentVaultProjectScoped & { serviceId: string };
+
+export type TListServicesDTO = TAgentVaultProjectScoped & {
+  search?: string;
+  // Only services that need (true) or don't need (false) the caller's personal values.
+  requiresSetup?: boolean;
+  // Only services in bundles granted to the caller, so an admin can leave out the ones they reach by role alone.
+  granted?: boolean;
+  orderBy?: "name" | "type" | "createdAt";
+  orderDirection?: "asc" | "desc";
+  limit: number;
+  offset: number;
+};
+
+export type TBundleServiceDTO = TAgentVaultProjectScoped & { accessBundleId: string; serviceId: string };
+
+export type TAddBundleServicesDTO = TAgentVaultProjectScoped & { accessBundleId: string; serviceIds: string[] };
 
 export type TListMembersDTO = TAgentVaultProjectScoped & {
   accessBundleId: string;

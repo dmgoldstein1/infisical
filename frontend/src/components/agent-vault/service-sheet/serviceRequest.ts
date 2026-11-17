@@ -262,15 +262,39 @@ const buildNativeConnection = (data: TServiceForm, serviceType: TAgentVaultNativ
   ...(hasDatabase(serviceType) ? { database: data.database.trim(), tls: buildNativeTls(data) } : {})
 });
 
+// A service created from a bundle's page goes into that bundle in the same request.
+const intoBundle = (accessBundleId?: string) =>
+  accessBundleId ? { accessBundleIds: [accessBundleId] } : {};
+
+// Only On sends a hook. A secret at the sentinel, or emptied, keeps the stored one.
+const typedHookSecret = (data: TServiceForm) =>
+  data.hookSigningSecret && data.hookSigningSecret !== UNCHANGED_SECRET
+    ? data.hookSigningSecret
+    : undefined;
+
+const buildHookCreate = (data: TServiceForm) =>
+  data.hookEnabled
+    ? { hook: { url: data.hookUrl.trim(), signingSecret: data.hookSigningSecret } }
+    : {};
+
+// Sent only when something changed, so a save that didn't touch the hook can't trip the plan check.
+const buildHookPatch = (service: TAgentVaultService, data: TServiceForm) => {
+  if (!data.hookEnabled) return service.hook ? { hook: null } : {};
+  const url = data.hookUrl.trim();
+  const signingSecret = typedHookSecret(data);
+  if (service.hook && url === service.hook.url && !signingSecret) return {};
+  return { hook: { url, ...(signingSecret ? { signingSecret } : {}) } };
+};
+
 const buildNativeCreateRequest = (
-  accessBundleId: string,
+  accessBundleId: string | undefined,
   data: TServiceForm,
   serviceType: TAgentVaultNativeServiceType
 ): TCreateAgentVaultServiceDTO => {
   const connection = buildNativeConnection(data, serviceType);
   if (serviceType === AgentVaultServiceType.Ssh) {
     return {
-      accessBundleId,
+      ...intoBundle(accessBundleId),
       type: serviceType,
       ...connection,
       credential:
@@ -280,7 +304,7 @@ const buildNativeCreateRequest = (
     };
   }
   return {
-    accessBundleId,
+    ...intoBundle(accessBundleId),
     type: serviceType,
     ...connection,
     database: data.database.trim(),
@@ -296,32 +320,37 @@ const buildNativeCredentialPatch = (
     : buildHttpCredentialPatch(data);
 
 export const buildCreateServiceRequest = (
-  accessBundleId: string,
+  accessBundleId: string | undefined,
   data: TServiceForm
 ): TCreateAgentVaultServiceDTO => {
   const description = data.description.trim() || undefined;
   if (isNativeServiceType(data.serviceType)) {
-    return { ...buildNativeCreateRequest(accessBundleId, data, data.serviceType), description };
+    return {
+      ...buildNativeCreateRequest(accessBundleId, data, data.serviceType),
+      description,
+      ...buildHookCreate(data)
+    };
   }
   return data.serviceType === AgentVaultServiceType.Mcp
     ? {
-        accessBundleId,
+        ...intoBundle(accessBundleId),
         type: AgentVaultServiceType.Mcp,
         ...buildMcpFields(data),
         description,
-        credential: buildMcpCredential(data)
+        credential: buildMcpCredential(data),
+        ...buildHookCreate(data)
       }
     : {
-        accessBundleId,
+        ...intoBundle(accessBundleId),
         type: AgentVaultServiceType.Http,
         ...buildHttpFields(data),
         description,
-        credential: buildHttpCredential(data)
+        credential: buildHttpCredential(data),
+        ...buildHookCreate(data)
       };
 };
 
 export const buildUpdateServiceRequest = (
-  accessBundleId: string,
   service: TAgentVaultService,
   data: TServiceForm
 ): TUpdateAgentVaultServiceDTO => {
@@ -329,30 +358,30 @@ export const buildUpdateServiceRequest = (
   const description = data.description.trim() || null;
   if (isNativeServiceType(data.serviceType)) {
     return {
-      accessBundleId,
       serviceId: service.id,
       type: data.serviceType,
       ...buildNativeConnection(data, data.serviceType),
       description,
-      credential: buildNativeCredentialPatch(data)
+      credential: buildNativeCredentialPatch(data),
+      ...buildHookPatch(service, data)
     };
   }
   return data.serviceType === AgentVaultServiceType.Mcp
     ? {
-        accessBundleId,
         serviceId: service.id,
         type: AgentVaultServiceType.Mcp,
         ...buildMcpFields(data),
         description,
-        ...withCredential(buildMcpCredentialPatch(data, service))
+        ...withCredential(buildMcpCredentialPatch(data, service)),
+        ...buildHookPatch(service, data)
       }
     : {
-        accessBundleId,
         serviceId: service.id,
         type: AgentVaultServiceType.Http,
         ...buildHttpFields(data),
         description,
-        credential: buildHttpCredentialPatch(data)
+        credential: buildHttpCredentialPatch(data),
+        ...buildHookPatch(service, data)
       };
 };
 
@@ -376,12 +405,12 @@ const ownToolsCredential = (
 // The credential and headers go as an update sends them, so on edit a value left untouched falls back to
 // the saved service's.
 export const buildListMcpToolsRequest = (
-  accessBundleId: string,
+  projectId: string,
   serviceId: string | undefined,
   data: TServiceForm,
   own?: TMcpToolsOwnCredential
 ): TListAgentVaultMcpToolsDTO => ({
-  accessBundleId,
+  projectId,
   ...(serviceId ? { serviceId } : {}),
   ...buildMcpConnection(data),
   ...withCredential(own ? ownToolsCredential(data, own) : buildMcpCredentialPatch(data, null))

@@ -16,7 +16,7 @@ import { agentVaultPersonalValueServiceFactory } from "./agent-vault-personal-va
 
 vi.mock("../agent-vault/agent-vault-permission", () => ({
   getAgentVaultGrantedReachability: vi.fn(async () => ({
-    isAdmin: false,
+    reachesEveryBundle: false,
     accessBundleIds: ["22222222-2222-4222-8222-222222222222"],
     grantedAccessBundleIds: ["22222222-2222-4222-8222-222222222222"],
     permission: createMongoAbility([{ action: "read", subject: "agent-vault-access-bundles" }])
@@ -75,7 +75,7 @@ const setup = ({
     agentVaultPersonalValueDAL: {
       transaction: async (fn: (t: unknown) => Promise<unknown>) => fn(tx),
       lockGrantsForOwner: vi.fn(async () => grants),
-      lockAdminRolesForOwner: vi.fn(async () => []),
+      lockRolesReachingEveryBundleForOwner: vi.fn(async () => []),
       lockForOwnerAndService: vi.fn(async () => []),
       delete: vi.fn(async () => []),
       create,
@@ -86,6 +86,7 @@ const setup = ({
     agentVaultVariableDAL: {} as never,
     agentVaultServiceDAL: {
       findByIdInProject: vi.fn(async () => readService),
+      findBundlesForServices: vi.fn(async () => new Map([[SERVICE_ID, [{ id: BUNDLE_ID, name: "bundle" }]]])),
       lockForPersonalValues: vi.fn(async () => lockedService)
     } as never,
     agentVaultOauthService: {
@@ -103,7 +104,6 @@ const setup = ({
   const connect = () =>
     service.connectOauth({
       projectId: PROJECT_ID,
-      accessBundleId: BUNDLE_ID,
       serviceId: SERVICE_ID,
       authorizationId: "authorization",
       ctx: {

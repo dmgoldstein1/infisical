@@ -3031,6 +3031,9 @@ describe("Agent Vault V1 Router", async () => {
         // By id, a global variable reads to a member like one that does not exist, as another member's personal one does.
         expect((await member.asIdentity("GET", `${variablesUrl}/${variable.id}/value`)).statusCode).toBe(404);
         expect((await member.asIdentity("DELETE", `${variablesUrl}/${variable.id}`)).statusCode).toBe(404);
+        const edited = await member.asIdentity("PATCH", `${variablesUrl}/${variable.id}`, { value: "smuggled" });
+        expect(edited.statusCode).toBe(404);
+        expect(edited.json().message).toBe(`Variable with ID '${variable.id}' not found`);
         expect(
           (await member.asIdentity("POST", variablesUrl, { scope: "global", key: "MINE", value: "x" })).statusCode
         ).toBe(403);
@@ -5577,6 +5580,31 @@ describe("Agent Vault V1 Router", async () => {
       const notAnId = await inject("DELETE", membersUrl, { userIds: ["not-a-uuid"] });
       expect(notAnId.statusCode).toBe(422);
     });
+
+    test("a member can't add, re-role or remove members, or list who could be added", async () => {
+      const member = await createMemberIdentity(`av-member-writes-${Date.now()}`);
+      const bystander = await createOrgIdentity(`av-member-writes-bystander-${Date.now()}`);
+      try {
+        const refused = await Promise.all([
+          member.as("GET", `${membersUrl}/available`),
+          member.as("POST", membersUrl, { machineIdentityIds: [bystander.id], role: "member" }),
+          member.as("PATCH", membersUrl, { machineIdentityIds: [member.id], role: "admin" }),
+          member.as("DELETE", membersUrl, { userIds: [seedData1.id] })
+        ]);
+        expect(refused.map((res) => res.statusCode)).toEqual([403, 403, 403, 403]);
+        refused.forEach((res) => {
+          expect(res.json().error).toBe("PermissionDenied");
+          expect(res.json().message).toMatch(/^You are not allowed to (read|create|edit|delete) on (member|groups|identity)$/);
+        });
+
+        const listed = await listMembers("actorType=machineIdentity");
+        expect(listed.members.find((row) => row.id === bystander.id)).toBeUndefined();
+        expect(listed.members.find((row) => row.id === member.id)?.role).toBe("member");
+      } finally {
+        await member.cleanup();
+        await deleteOrgIdentity(bystander.id);
+      }
+    });
   });
 
   describe("cross-org ids and foreign resources", async () => {
@@ -5695,6 +5723,63 @@ describe("Agent Vault V1 Router", async () => {
         expect(somebodyElses.json().message).toBe(`Session with ID '${session.id}' not found`);
         expect(neverExisted.json().message).toBe(`Session with ID '${missingId}' not found`);
         expect(somebodyElses.json().error).toBe(neverExisted.json().error);
+      } finally {
+        await member.cleanup();
+      }
+    });
+
+    test("only an admin lists everyone's sessions or revokes one that belongs to someone else", async () => {
+      const bundle = await createAccessBundle(`session-others-${Date.now()}`);
+      const adminMint = await inject("POST", "/api/v1/agent-vault/sessions", { accessBundle: bundle.name, ttl: "1h" });
+      expect(adminMint.statusCode).toBe(200);
+      const adminSession = adminMint.json().session as { id: string };
+
+      const member = await createMemberIdentity(`session-others-member-${Date.now()}`);
+      try {
+        expect(
+          (
+            await inject("POST", `/api/v1/agent-vault/access-bundles/${bundle.id}/members`, {
+              machineIdentityIds: [member.id]
+            })
+          ).statusCode
+        ).toBe(200);
+        const memberMint = await member.as("POST", "/api/v1/agent-vault/sessions", {
+          accessBundle: bundle.name,
+          ttl: "1h"
+        });
+        expect(memberMint.statusCode).toBe(200);
+        const memberSession = memberMint.json().session as { id: string };
+
+        const everyone = await member.as("GET", "/api/v1/agent-vault/sessions?scope=all");
+        expect(everyone.statusCode).toBe(403);
+        expect(everyone.json().message).toBe("You are not allowed to read-any on agent-vault-sessions");
+        const own = await member.as("GET", "/api/v1/agent-vault/sessions?limit=100");
+        expect(own.statusCode).toBe(200);
+        expect((own.json().sessions as { id: string }[]).map((row) => row.id)).toEqual([memberSession.id]);
+
+        const listedByAdmin = await inject("GET", "/api/v1/agent-vault/sessions?scope=all&limit=2");
+        expect(listedByAdmin.statusCode).toBe(200);
+        expect((listedByAdmin.json().sessions as { id: string }[]).map((row) => row.id)).toEqual([
+          memberSession.id,
+          adminSession.id
+        ]);
+
+        const revokeTheirs = await member.as("POST", `/api/v1/agent-vault/sessions/${adminSession.id}/revoke`);
+        expect(revokeTheirs.statusCode).toBe(404);
+        expect(revokeTheirs.json().message).toBe(`Session with ID '${adminSession.id}' not found`);
+        const stillActive = await inject("GET", `/api/v1/agent-vault/sessions/${adminSession.id}`);
+        expect(stillActive.json().session.status).toBe("active");
+
+        const readByAdmin = await inject("GET", `/api/v1/agent-vault/sessions/${memberSession.id}`);
+        expect(readByAdmin.statusCode).toBe(200);
+        const relabelledByAdmin = await inject("PATCH", `/api/v1/agent-vault/sessions/${memberSession.id}`, {
+          label: "checked by admin"
+        });
+        expect(relabelledByAdmin.statusCode).toBe(200);
+        expect(relabelledByAdmin.json().session).toMatchObject({ id: memberSession.id, label: "checked by admin" });
+        const revokedByAdmin = await inject("POST", `/api/v1/agent-vault/sessions/${memberSession.id}/revoke`);
+        expect(revokedByAdmin.statusCode).toBe(200);
+        expect(revokedByAdmin.json().session).toMatchObject({ id: memberSession.id, status: "revoked" });
       } finally {
         await member.cleanup();
       }
@@ -5874,7 +5959,7 @@ describe("Agent Vault V1 Router", async () => {
       expect(set.json().session).toMatchObject({ id, label: "first pass", status: "active" });
       expect((await inject("GET", `/api/v1/agent-vault/sessions/${id}`)).json().session.label).toBe("first pass");
 
-      // The label is the only field, so leaving it out must not read as clearing it.
+      // Neither field sent is refused, rather than read as clearing the label.
       expect((await inject("PATCH", `/api/v1/agent-vault/sessions/${id}`, {})).statusCode).toBe(422);
       expect((await inject("PATCH", `/api/v1/agent-vault/sessions/${id}`, { label: "a\u200bb" })).statusCode).toBe(422);
       expect((await inject("GET", `/api/v1/agent-vault/sessions/${id}`)).json().session.label).toBe("first pass");
@@ -5906,6 +5991,133 @@ describe("Agent Vault V1 Router", async () => {
       } finally {
         await member.cleanup();
       }
+    });
+
+    test("metadata is set at creation, returned on every read, and replaced or cleared later", async () => {
+      const bundle = await createAccessBundle(`session-metadata-${Date.now()}`);
+      const label = `metadata run ${Date.now()}`;
+
+      const plain = await inject("POST", "/api/v1/agent-vault/sessions", { accessBundle: bundle.name, ttl: "1h" });
+      expect(plain.statusCode).toBe(200);
+      expect(plain.json().session.metadata).toEqual({});
+
+      const minted = await inject("POST", "/api/v1/agent-vault/sessions", {
+        accessBundle: bundle.name,
+        ttl: "1h",
+        label,
+        metadata: { " runId ": " 8812 ", slackChannel: "#deploys", endUser: "alice@example.com" }
+      });
+      expect(minted.statusCode).toBe(200);
+      const { id } = minted.json().session as { id: string };
+      const expected = [
+        ["runId", "8812"],
+        ["slackChannel", "#deploys"],
+        ["endUser", "alice@example.com"]
+      ];
+      expect(Object.entries(minted.json().session.metadata as Record<string, string>)).toEqual(expected);
+
+      const byId = await inject("GET", `/api/v1/agent-vault/sessions/${id}`);
+      expect(Object.entries(byId.json().session.metadata as Record<string, string>)).toEqual(expected);
+      const listed = await inject("GET", `/api/v1/agent-vault/sessions?search=${encodeURIComponent(label)}`);
+      expect(listed.json().sessions[0]).toMatchObject({ id, metadata: Object.fromEntries(expected) });
+
+      // Metadata is not searchable.
+      const searched = await inject("GET", "/api/v1/agent-vault/sessions?search=8812");
+      expect((searched.json() as { sessions: { id: string }[] }).sessions.map((row) => row.id)).not.toContain(id);
+
+      // A label-only edit keeps the metadata.
+      const relabelled = await inject("PATCH", `/api/v1/agent-vault/sessions/${id}`, { label: "renamed" });
+      expect(relabelled.statusCode).toBe(200);
+      expect(relabelled.json().session).toMatchObject({ label: "renamed", metadata: Object.fromEntries(expected) });
+
+      // Metadata replaces the whole set and leaves the label alone.
+      const replaced = await inject("PATCH", `/api/v1/agent-vault/sessions/${id}`, { metadata: { ticket: "OPS-12" } });
+      expect(replaced.statusCode).toBe(200);
+      expect(replaced.json().session).toMatchObject({ label: "renamed", metadata: { ticket: "OPS-12" } });
+      expect((await inject("GET", `/api/v1/agent-vault/sessions/${id}`)).json().session.metadata).toEqual({
+        ticket: "OPS-12"
+      });
+
+      // Still editable once the session is revoked, like the label.
+      const revoked = await inject("POST", `/api/v1/agent-vault/sessions/${id}/revoke`);
+      expect(revoked.json().session.metadata).toEqual({ ticket: "OPS-12" });
+      const cleared = await inject("PATCH", `/api/v1/agent-vault/sessions/${id}`, { metadata: {} });
+      expect(cleared.statusCode).toBe(200);
+      expect(cleared.json().session).toMatchObject({ status: "revoked", metadata: {} });
+
+      const rejected = {
+        tooMany: Object.fromEntries(Array.from({ length: 21 }, (_, index) => [`key${index}`, "v"])),
+        collision: { runId: "1", "runId ": "2" },
+        emptyKey: { "": "v" },
+        emptyValue: { runId: " " },
+        equalsInKey: { "run=id": "v" },
+        invisible: { "alice\u200b": "v" },
+        nonString: { runId: 8812 }
+      };
+      for await (const [name, metadata] of Object.entries(rejected)) {
+        const res = await inject("POST", "/api/v1/agent-vault/sessions", {
+          accessBundle: bundle.name,
+          ttl: "1h",
+          metadata
+        });
+        expect(res.statusCode, name).toBe(422);
+      }
+      const collision = await inject("PATCH", `/api/v1/agent-vault/sessions/${id}`, { metadata: rejected.collision });
+      expect(JSON.stringify(collision.json().message)).toContain(
+        "The metadata key 'runId' appears more than once. Each key can be used once per session."
+      );
+      const emptyValue = await inject("PATCH", `/api/v1/agent-vault/sessions/${id}`, { metadata: rejected.emptyValue });
+      expect(emptyValue.statusCode).toBe(422);
+      expect(JSON.stringify(emptyValue.json().message)).toContain("Enter a value for metadata key 'runId'");
+      expect((await inject("GET", `/api/v1/agent-vault/sessions/${id}`)).json().session.metadata).toEqual({});
+    });
+
+    test("metadata filters the session list, every pair must match, and the count follows it", async () => {
+      const bundle = await createAccessBundle(`session-metadata-filter-${Date.now()}`);
+      const runId = `run-${Date.now()}`;
+      const mint = async (metadata: Record<string, string>) => {
+        const res = await inject("POST", "/api/v1/agent-vault/sessions", {
+          accessBundle: bundle.name,
+          ttl: "1h",
+          metadata
+        });
+        expect(res.statusCode).toBe(200);
+        return res.json().session.id as string;
+      };
+      const prod = await mint({ runId, env: "prod" });
+      const staging = await mint({ runId, env: "staging" });
+      await mint({ runId: `${runId}-other`, env: "prod" });
+
+      const list = async (query: string) => {
+        const res = await inject("GET", `/api/v1/agent-vault/sessions?${query}`);
+        expect(res.statusCode, query).toBe(200);
+        const body = res.json() as { sessions: { id: string }[]; totalCount: number };
+        return { ids: body.sessions.map((row) => row.id).sort(), totalCount: body.totalCount };
+      };
+
+      expect(await list(`metadata=runId=${runId}`)).toEqual({ ids: [prod, staging].sort(), totalCount: 2 });
+      // A real repeated param, which arrives as an array.
+      expect(await list(`metadata=runId=${runId}&metadata=env=prod`)).toEqual({ ids: [prod], totalCount: 1 });
+      expect(await list(`metadata=${encodeURIComponent(` runId = ${runId} `)}&metadata=env=dev`)).toEqual({
+        ids: [],
+        totalCount: 0
+      });
+      // The count describes the filtered set, not the page.
+      const paged = await list(`metadata=runId=${runId}&limit=1`);
+      expect(paged.ids).toHaveLength(1);
+      expect(paged.totalCount).toBe(2);
+
+      const malformed = await inject("GET", "/api/v1/agent-vault/sessions?metadata=runId");
+      expect(malformed.statusCode).toBe(422);
+      expect(JSON.stringify(malformed.json().message)).toContain(
+        "Filter metadata as key=value, such as metadata=runId=8812"
+      );
+      const emptyValue = await inject("GET", "/api/v1/agent-vault/sessions?metadata=runId=");
+      expect(emptyValue.statusCode).toBe(422);
+      expect(JSON.stringify(emptyValue.json().message)).toContain("Enter a value for metadata key 'runId'");
+      const repeated = await inject("GET", "/api/v1/agent-vault/sessions?metadata=runId=1&metadata=runId=2");
+      expect(repeated.statusCode).toBe(422);
+      expect(JSON.stringify(repeated.json().message)).toContain("The metadata key 'runId' appears more than once.");
     });
 
     test("search filters and counts on the server, not just the page", async () => {
@@ -7681,7 +7893,7 @@ describe("Agent Vault V1 Router", async () => {
         const refused = await member.as("POST", sessionsUrl, { ttl: "1h", services: [openai] });
         expect(refused.statusCode).toBe(403);
         expect(refused.json().message).toBe(
-          "Only an Agent Vault admin can send services with a session. Name an access bundle instead."
+          "You are not allowed to create-with-inline-services on agent-vault-sessions. Name an access bundle instead."
         );
       } finally {
         await member.cleanup();
@@ -7779,12 +7991,26 @@ describe("Agent Vault V1 Router", async () => {
         const resolve = await createResolver(`inline-demote-${Date.now()}`);
         const serviceNames = async () =>
           ((await resolve(token)).json().services as TResolvedService[]).map((entry) => entry.name);
+        // The services list the agent reads follows the same rule as resolve.
+        const listedNames = async () =>
+          (
+            (
+              await testServer.inject({
+                method: "GET",
+                url: "/api/v1/agent-vault/session/services",
+                headers: { authorization: `Bearer ${token}` }
+              })
+            ).json().services as { name: string }[]
+          ).map((entry) => entry.name);
         expect(await serviceNames()).toEqual(["github", "openai"]);
+        expect(await listedNames()).toEqual(["github", "openai"]);
 
         await setRole("member");
         expect(await serviceNames()).toEqual(["github"]);
+        expect(await listedNames()).toEqual(["github"]);
         await setRole("admin");
         expect(await serviceNames()).toEqual(["github", "openai"]);
+        expect(await listedNames()).toEqual(["github", "openai"]);
       } finally {
         await owner.cleanup();
       }
@@ -9413,6 +9639,31 @@ describe("Agent Vault V1 Router", async () => {
       expect(proxy.trafficPolicy).toBe("any-host");
       expect(proxy.allowedHosts).toBeNull();
       expect(proxy.pollInterval).toBe(60);
+    });
+
+    test("a member's proxy list leaves out the settings an admin's shows", async () => {
+      const created = await inject("POST", "/api/v1/agent-vault/proxies", { name: `member-view-${Date.now()}` });
+      expect(created.statusCode).toBe(200);
+      const proxyId = created.json().proxy.id as string;
+
+      const member = await createMemberIdentity(`proxy-member-view-${Date.now()}`);
+      try {
+        const asMember = await member.as("GET", "/api/v1/agent-vault/proxies");
+        expect(asMember.statusCode).toBe(200);
+        const seen = (asMember.json().proxies as Record<string, unknown>[]).find((row) => row.id === proxyId);
+        expect(seen).toMatchObject({ id: proxyId });
+        expect(seen).toHaveProperty("isHealthy");
+        ["trafficPolicy", "allowedHosts", "pollInterval", "createdAt"].forEach((field) =>
+          expect(seen).not.toHaveProperty(field)
+        );
+
+        const asAdmin = await inject("GET", "/api/v1/agent-vault/proxies");
+        const full = (asAdmin.json().proxies as Record<string, unknown>[]).find((row) => row.id === proxyId);
+        expect(full).toMatchObject({ id: proxyId, trafficPolicy: "any-host", allowedHosts: null, pollInterval: 60 });
+        expect(full).toHaveProperty("createdAt");
+      } finally {
+        await member.cleanup();
+      }
     });
 
     test("a proxy's description is stored, searchable, and can be cleared", async () => {

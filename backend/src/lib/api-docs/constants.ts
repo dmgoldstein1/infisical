@@ -105,6 +105,7 @@ export enum ApiDocsTags {
   PamDiscovery = "PAM Discovery",
   AgentVault = "Agent Vault",
   AgentVaultAccessBundles = "Agent Vault Access Bundles",
+  AgentVaultServices = "Agent Vault Services",
   AgentVaultVariables = "Agent Vault Variables",
   AgentVaultSkills = "Agent Vault Skills",
   AgentVaultSessions = "Agent Vault Sessions",
@@ -214,6 +215,16 @@ export const IDENTITIES = {
   GET_BY_ID: {
     identityId: "The ID of the machine identity to get details.",
     orgId: "The ID of the org of the identity"
+  },
+  LIST_PROJECT_MEMBERSHIPS: {
+    identityId: "The ID of the machine identity to list project memberships for.",
+    limit:
+      "The maximum number of project memberships to return. When omitted, every project membership of the machine identity is returned.",
+    offset: "The number of project memberships to skip.",
+    search: "Only return memberships of projects whose name contains this text. Case-insensitive.",
+    orderDirection: "The direction to order memberships in, by project name.",
+    excludeProjectType: "Leave out memberships of projects of this type.",
+    totalCount: "The number of project memberships matching the filters, ignoring limit and offset."
   },
   LIST: {
     orgId: "The ID of the organization to list identities.",
@@ -884,6 +895,27 @@ export const SPIFFE_AUTH = {
   }
 } as const;
 
+export const USERS = {
+  GET_DELETION_ELIGIBILITY: {
+    canDelete:
+      "Whether your account can be deleted now. False while you are the only server admin or the only admin of an organization that has other members.",
+    isOnlyServerAdmin:
+      "Whether you are the only server admin on this instance. Promote another user to server admin before deleting your account.",
+    lastMemberOrganizations:
+      "Organizations where you are the last member who can sign in. Deleting your account deletes them, which cancels their subscriptions, and requires their IDs in lastMemberOrganizationIds.",
+    lastAdminOrganizations:
+      "Organizations that have other members but where you are the only admin. Promote another member to admin in each before deleting your account.",
+    organization: {
+      id: "The ID of the organization.",
+      name: "The name of the organization."
+    }
+  },
+  DELETE: {
+    lastMemberOrganizationIds:
+      "Comma-separated IDs of the organizations where you are the last member who can sign in, as listed in lastMemberOrganizations by GET /api/v2/users/me/deletion-eligibility. They are deleted with your account, which cancels their subscriptions. The request is refused unless this matches that list exactly, and refused without it while any such organization exists."
+  }
+};
+
 export const ORGANIZATIONS = {
   LIST_USER_MEMBERSHIPS: {
     organizationId: "The ID of the organization to get memberships from."
@@ -915,6 +947,17 @@ export const ORGANIZATIONS = {
   DELETE_USER_MEMBERSHIP: {
     organizationId: "The ID of the organization to delete the membership from.",
     membershipId: "The ID of the membership to delete."
+  },
+  LIST_USER_PROJECT_MEMBERSHIPS: {
+    organizationId: "The ID of the organization the membership belongs to.",
+    membershipId: "The ID of the organization membership to list project memberships for.",
+    limit:
+      "The maximum number of project memberships to return. When omitted, every project membership of the user is returned.",
+    offset: "The number of project memberships to skip.",
+    search: "Only return memberships of projects whose name contains this text. Case-insensitive.",
+    orderDirection: "The direction to order memberships in, by project name.",
+    excludeProjectType: "Leave out memberships of projects of this type.",
+    totalCount: "The number of project memberships matching the filters, ignoring limit and offset."
   },
   BULK_DELETE_USER_MEMBERSHIPS: {
     organizationId: "The ID of the organization to delete the memberships from.",
@@ -1150,6 +1193,14 @@ export const PROJECTS = {
     projectId: "The ID of the project to delete.",
     hardDelete:
       "When true, the project is permanently deleted shortly after the request. When false or omitted, a secret manager project is soft-deleted (preserved and scheduled for permanent deletion after a grace period) and hidden from subsequent reads."
+  },
+  LIST: {
+    includeRoles: "Whether to include each project's roles. Requires permission to add organization members.",
+    type: "The type of projects to list.",
+    limit:
+      "The maximum number of projects to return, ordered by name. When omitted, every project the caller can access is returned.",
+    offset: "The number of projects to skip, ordered by name.",
+    totalCount: "The number of projects the caller can access, ignoring limit and offset."
   },
   LIST_DELETED: {
     type: "The type of soft-deleted projects to list."
@@ -2404,7 +2455,14 @@ export const CERTIFICATE_AUTHORITIES = {
   GET_CRLS: {
     caId: "The ID of the CA to get the certificate revocation lists (CRLs) for.",
     id: "The ID of certificate revocation list (CRL).",
-    crl: "The certificate revocation list (CRL)."
+    crl: "The certificate revocation list (CRL).",
+    thisUpdate: "When the current CRL was issued.",
+    nextUpdate: "When the current CRL expires. A new CRL is issued before this time.",
+    crlNumber: "The CRL number of the current CRL. Null for a CRL issued without a CRL Number extension."
+  },
+  REGENERATE_CRL: {
+    caId: "The ID of the CA to regenerate the certificate revocation list (CRL) for.",
+    crlNumber: "The CRL number of the new CRL."
   },
   INSTALL_CERT_VENAFI: {
     caId: "The ID of the CA to install the certificate for via Venafi."
@@ -2479,7 +2537,8 @@ export const CERTIFICATES = {
       "The serial number of the certificate to revoke. The revoked certificate will be added to the certificate revocation list (CRL) of the CA.",
     revocationReason: "The reason for revoking the certificate.",
     revokedAt: "The date and time when the certificate was revoked.",
-    serialNumberRes: "The serial number of the revoked certificate."
+    serialNumberRes: "The serial number of the revoked certificate.",
+    crlWarning: "Set when the certificate was revoked but the CRL could not be regenerated. Contains the reason."
   },
   DELETE: {
     id: "The ID of the certificate to delete.",
@@ -2993,6 +3052,9 @@ export const CertificateAuthorities = {
     enableDirectIssuance: `Whether or not to enable direct issuance of certificates for the ${CERTIFICATE_AUTHORITIES_TYPE_MAP[type]} Certificate Authority.`,
     status: `The updated status of the ${CERTIFICATE_AUTHORITIES_TYPE_MAP[type]} Certificate Authority.`
   }),
+  UPDATE_INTERNAL_RESPONSE: {
+    crlWarning: "Set when the CRL validity was changed but the CRL could not be regenerated. Contains the reason."
+  },
   CONFIGURATIONS: {
     ACME: {
       dnsAppConnectionId: `The ID of the App Connection to use for creating and managing DNS TXT records required for ACME domain validation. This connection must have permissions to create and delete TXT records in your DNS provider (e.g., Route53) for the ACME challenge process.`,
@@ -3049,7 +3111,9 @@ export const CertificateAuthorities = {
       disableManagedCrlDistributionPointUrl:
         "When set to true, the Infisical-managed CRL endpoint URL will not be embedded in certificates issued by this CA. Only custom CRL Distribution Point URLs (if any) will be included.",
       isOcspEnabled:
-        "When set to true, certificates issued by this CA carry the Infisical-managed OCSP responder URL in their Authority Information Access extension, and that responder answers revocation status queries for them. Applies to certificates issued after it is enabled."
+        "When set to true, certificates issued by this CA carry the Infisical-managed OCSP responder URL in their Authority Information Access extension, and that responder answers revocation status queries for them. Applies to certificates issued after it is enabled.",
+      crlValidityDays:
+        "How many days each CRL issued by this CA is valid, from 1 to 365. Defaults to 7. A value other than 7 requires the Enterprise plan. A CRL is never valid past the CA certificate's expiry. Changing the value regenerates the CRL. It can't be changed after the CA expires."
     }
   }
 };
@@ -3314,6 +3378,12 @@ export const AppConnections = {
       instanceUrl: "The Portainer instance URL to connect to.",
       apiToken: "The API token used to authenticate with Portainer."
     },
+    JENKINS: {
+      instanceUrl:
+        "The Jenkins instance URL to connect to, including any context path (e.g., 'https://ci.example.com/jenkins').",
+      username: "The username of the Jenkins user that owns the API token.",
+      apiToken: "The Jenkins API token used to authenticate."
+    },
     QOVERY: {
       accessToken: "The project access token used to authenticate with Qovery."
     },
@@ -3342,6 +3412,9 @@ export const AppConnections = {
       sslRejectUnauthorized:
         "Whether or not to reject untrusted SSL certificates (true/false). Set to false for iLO interfaces using self-signed certificates.",
       sslCertificate: "The CA certificate (PEM format) used to verify the iLO interface's TLS certificate."
+    },
+    INCIDENT_IO: {
+      apiKey: "The incident.io API key used to read on-call schedules. It needs the View on-call resources permission."
     },
     JIRA: {
       instanceUrl:
@@ -3824,6 +3897,11 @@ export const SecretSyncs = {
     PORTAINER: {
       environmentId: "The ID of the Portainer environment (endpoint) that hosts the stack.",
       stackId: "The ID of the Portainer stack to sync secrets to."
+    },
+    JENKINS: {
+      scope:
+        "The Jenkins credential store to sync secrets to. Either 'global' for the system store or 'folder' for a folder's store.",
+      folderPath: "The full name of the Jenkins folder to sync secrets to (e.g., 'team/app')."
     }
   }
 };
@@ -4727,7 +4805,27 @@ export const AGENT_VAULT = {
   },
   SERVICE: {
     serviceId: "The ID of the service.",
-    name: "The name of the service.",
+    addServiceIds:
+      "The IDs of the services to add, all in the same Agent Vault project. If any is missing or conflicts with a service in the bundle, none are added.",
+    addedServices: "The services the request added to the access bundle.",
+    addSkippedServices:
+      "The services the request named that were already in the access bundle. They're left as they are.",
+    name: "The name of the service, unique in the Agent Vault project.",
+    accessBundles: "The access bundles the service is in, by name. A member sees only the ones they have been granted.",
+    accessBundleId: "The ID of the access bundle.",
+    accessBundleName: "The name of the access bundle.",
+    createAccessBundleIds:
+      "The access bundles to add the service to, all in the same Agent Vault project. Leave out to create it in no bundle and add it later.",
+    search: "Only services whose name, description or host pattern contains this text.",
+    limit: "The number of services to return.",
+    offset: "The number of services to skip.",
+    totalCount: "The number of services that match, across every page.",
+    requiresSetup:
+      "true lists only the services that still need your personal values; false leaves them out. Leave it out to list both.",
+    granted:
+      "true lists only services in access bundles granted to you, leaving out ones an admin reaches only through their role.",
+    orderBy: "What to sort services by: name, type, or createdAt.",
+    orderDirection: "The sort direction, asc or desc.",
     description:
       "What the service is for, such as what an agent can do with it and when to use it. Up to 256 characters, without line breaks or invisible characters. Agents in a session can read it, so never put a credential or any other secret in it.",
     updateDescription:
@@ -4760,6 +4858,18 @@ export const AGENT_VAULT = {
       "PEM certificate(s) of the authority that signed the database's certificate, used only while `verify` is on. Send null to remove a stored one.",
     tlsCaRead:
       "PEM certificate(s) of the authority that signed the database's certificate, used only while `verify` is on. Null when none is stored.",
+    hook: "A server of yours that the proxy asks before it sends each request to this service, or opens each connection for a database or SSH service. The proxy sends the request on only if your server allows it. `url` is where the proxy sends each check, and `signingSecret` is the key it signs them with.",
+    updateHook:
+      "The hook to set or change. Send `url` alone to change only the URL and keep the saved signing secret, or `url` and `signingSecret` to replace both. Send null to remove the hook and its signing secret.",
+    hookUrl:
+      "Where the proxy sends each check: an `https://` or `http://` URL of at most 2048 characters, without a username, password, query string or fragment. Over `http://`, checks and answers are sent unencrypted.",
+    hookSigningSecret:
+      "The key the proxy signs each check with, so your server can tell the check came from the proxy. 32 to 512 printable ASCII characters with no spaces, used exactly as given. Never returned once saved.",
+    updateHookSigningSecret:
+      "The key the proxy signs each check with. 32 to 512 printable ASCII characters with no spaces, used exactly as given. Leave it out to keep the saved one; required when the service has no hook yet. Never returned once saved.",
+    hookRead:
+      "The service's hook, or null when it has none. Its signing secret is never returned. Left out for members.",
+    hookUrlRead: "Where the proxy sends each check.",
     databaseCredential: "The account the proxy logs in to the database as, a username and password.",
     sshCredential: "The account the proxy logs in to the SSH server as, a username with a password or an SSH key.",
     nativeUsername: `The user the proxy logs in as. ${AGENT_VAULT_VARIABLE_REFERENCES} Never returned once saved.`,
@@ -4809,7 +4919,7 @@ export const AGENT_VAULT = {
     updateUsername: `The username half of the basic credential. ${AGENT_VAULT_VARIABLE_REFERENCES} Omit to keep the stored username; send an empty string to remove it, which requires a password.`,
     updateValue: `The secret. ${AGENT_VAULT_VARIABLE_REFERENCES} Omit to keep the stored secret.`,
     updatePassword: `The password half of the basic credential. ${AGENT_VAULT_VARIABLE_REFERENCES} Omit to keep the stored password; send an empty string to remove it, which requires a username.`,
-    createdAt: "When the service was added to the access bundle.",
+    createdAt: "When the service was created.",
     updatedAt: "When the service was last changed.",
     value: `The secret. ${AGENT_VAULT_VARIABLE_REFERENCES} Never returned once saved.`,
     password: `The password half of the basic credential. May be empty if a username is set, for APIs that carry the whole key in the username. ${AGENT_VAULT_VARIABLE_REFERENCES} Never returned once saved.`,
@@ -4908,7 +5018,6 @@ export const AGENT_VAULT = {
   OAUTH: {
     authorization: "The OAuth authorization, or null when an OAuth client must be registered first.",
     authorizationId: "The ID of the OAuth authorization.",
-    accessBundleId: "The access bundle the service is in, or will be created in.",
     serverUrl: "The MCP server's URL. Must match the server URL of the service the authorization is saved to.",
     serviceId:
       "The ID of the MCP service to reauthorize. Leave it out when connecting a new service. When set, the sign-in asks for the scopes the service already has, and can only be saved to that service.",
@@ -4918,7 +5027,7 @@ export const AGENT_VAULT = {
     registration:
       "Send `dynamic` to register a new client with the server, even when the service being reauthorized uses your own OAuth app.",
     personal:
-      "Send `true` to connect your own account to a service that leaves its OAuth sign-in to each member, then save the authorization as your personal value for the service. Needs only access to the service's access bundle. `serviceId` is required, and the client is the one the service's admin set up, so leave `clientId`, `clientSecret` and `registration` out.",
+      "Send `true` to connect your own account to a service that leaves its OAuth sign-in to each member, then save the authorization as your personal value for the service. Needs only access to an access bundle the service is in. `serviceId` is required, and the client is the one the service's admin set up, so leave `clientId`, `clientSecret` and `registration` out.",
     registrationRequired:
       "True when the server can't register Infisical as a client by itself, or refused to. Send `clientId` (and `clientSecret`) of your own OAuth app.",
     redirectUri:
@@ -4969,8 +5078,10 @@ export const AGENT_VAULT = {
     usedByServiceName: "The name of the service.",
     usedByServiceType: "The service's type: `http`, `mcp`, `postgres`, `mysql` or `ssh`.",
     usedByServiceHostPattern: "The host pattern of the service. Null for a `postgres`, `mysql` or `ssh` service.",
-    usedByServiceAccessBundleId: "The ID of the access bundle the service belongs to.",
-    usedByServiceAccessBundleName: "The name of the access bundle the service belongs to.",
+    usedByServiceAccessBundleId: "The ID of the access bundle.",
+    usedByServiceAccessBundleName: "The name of the access bundle.",
+    usedByServiceAccessBundles:
+      "The access bundles the service is in. A member sees only the ones they have been granted.",
     createdAt: "When the variable was added.",
     updatedAt: "When the variable was last changed."
   },
@@ -5004,7 +5115,10 @@ export const AGENT_VAULT = {
       "The version these files were edited from. If a newer version has been saved since, nothing is saved and the request fails with 409. Omit it to update regardless.",
     restoreUnchanged:
       "True if the version being restored has the same files as the latest version, in which case no new version was made and the latest version is returned.",
-    addSkillId: "The ID of the skill to add to the access bundle.",
+    addSkillIds:
+      "The IDs of the skills to add to the access bundle. If any is missing, or the bundle would hold more than 25 skills, none are added.",
+    addedSkills: "The skills the request added to the access bundle.",
+    addSkippedSkills: "The skills the request named that were already in the access bundle. They're left as they are.",
     search: "Match skills whose name or description contains this text.",
     nameFilter: "Return only the skill with exactly this name.",
     limit: "The maximum number of skills to return. Defaults to 20.",
@@ -5177,6 +5291,11 @@ export const AGENT_VAULT = {
     accessBundle:
       "The name of the access bundle this session carries. Leave it out to start a session with services of its own only.",
     accessBundleRead: "The access bundle this session carries. Null for a session with services of its own only.",
+    stats:
+      "How many requests went through this session, as counted by the proxy when it uploads session logs. Null when no logs were uploaded for the session, for example while session logs are off.",
+    statsRequests: "Every request the proxy recorded for this session, whatever its decision.",
+    statsBrokered:
+      "The requests the proxy sent with a credential attached. Null when a proxy didn't report it for any of the session's logs.",
     inlineServices:
       "Services this session carries itself, alongside its access bundle's or without one. Agent Vault admins only, up to 20. Each takes the same fields as a service in an access bundle, with three differences: the name is optional, every value is sent exactly as given because variables aren't available, and no field can be left to members. They belong to this session only and can't be edited. Their credentials, custom header values and substitution values are deleted when the session is revoked, or within an hour after it expires.",
     inlineServiceName:
@@ -5208,6 +5327,9 @@ export const AGENT_VAULT = {
     inlineServiceId: "The ID of the service sent with this session.",
     inlineServiceNameRead:
       "The name the service was sent with, or its first host if it was sent without one. Shown in session logs and in the proxy's error messages.",
+    inlineHook:
+      "A server of yours that the proxy asks before it sends each request to this service, or opens each connection for a database or SSH service. Its signing secret is deleted when the session ends.",
+    inlineHookRead: "The service's hook, or null when it was sent without one. Its signing secret is never returned.",
     ttl: "How long the session lasts: a duration such as 30m, 8h or 7d (at least 1m), or never. Defaults to 7d, or to 1h for a session started on behalf of a user.",
     label:
       "A short description of what the session is for, such as `nightly deploy` or `support ticket triage`. Up to 128 characters, without line breaks, tabs, or invisible characters. Shown wherever the session is listed.",
@@ -5328,12 +5450,34 @@ export const AGENT_VAULT = {
     limit: "The maximum number of users and groups to return.",
     offset: "How many users and groups to skip.",
     totalCount: "How many users and groups match, across every page."
+  },
+  ACCESS: {
+    state:
+      "Why the organization can or can't use Agent Vault: `self-hosted` and `plan` are never limited, `open` means the plan doesn't say yet and nothing is limited, `free` means it uses the free monthly requests, and `limit-reached` means it used them all this month.",
+    allowed: "Whether agents can use Agent Vault right now. False only once the free requests for this month are used.",
+    freeUsage:
+      "The organization's free requests this month, or `null` when it isn't on the free tier or the count couldn't be read.",
+    used: "How many free requests the organization used this month.",
+    limit: "How many free requests the organization gets each month.",
+    resetsAt: "When the free requests start again, at the start of next month (UTC).",
+    warn: "Whether the organization used most of its free requests this month, so the UI can warn before they run out."
+  },
+  USAGE: {
+    reportId:
+      "A random ID the proxy picks for this report. Send the same ID when you resend a report, so it is counted once.",
+    endedAt: "When the period this report covers ended. Send the same time when you resend a report.",
+    brokered: "How many requests the proxy brokered in this period, from 0 to 1,000,000."
   }
 };
 
 export const IMPERVA_PKI_SYNC_DESTINATION_CONFIG = {
   siteId: "The numeric ID of the Imperva website that receives the certificate.",
   siteName: "The website's name, kept for display. Imperva's website ID is what the sync acts on."
+};
+
+export const CLOUDFLARE_CUSTOM_CERTIFICATE_PKI_SYNC_OPTIONS = {
+  bundleMethod:
+    "The Cloudflare bundle method for uploaded certificates: ubiquitous (Compatible), optimal (Modern), or force (User-defined, Cloudflare serves the uploaded chain as-is; for certificates from an Infisical CA, the CA's root is appended). When omitted, certificates from an Infisical CA use force and all others use ubiquitous."
 };
 
 export const PALO_ALTO_NETWORKS_PKI_SYNC_DESTINATION_CONFIG = {
@@ -5378,9 +5522,13 @@ export const APPROVAL_POLICY_AUTO_APPROVAL = {
   ruleName: "A name that tells approvers why the rule approved a request.",
   conditions: "Every condition in a rule must pass for the rule to approve.",
   conditionConnectionId:
-    "The ID of the App Connection the condition reads, matching one of the inputs, or any available connection when the subject is 'requester'.",
+    "The ID of the App Connection the condition reads, matching one of the inputs, or any available connection when the subject is 'requester'. Omit it for an 'ai' condition.",
   conditionSubject:
-    "What the condition checks: one of the inputs' subjects, or 'requester' for the requester's own account.",
+    "What the condition checks: one of the inputs' subjects, 'requester' for the requester's own account, or 'ai' to have the organization's AI model review the request.",
+  conditionPrompt:
+    "For an 'ai' condition, the instructions the AI model checks the request against. The model receives the request details and every request form field value.",
+  conditionContextConnectionIds:
+    "For an 'ai' condition, the IDs of App Connections the AI model can read from with read-only lookups (e.g. a Jira connection).",
   constraint: "Which check to run, from the subject's constraints in the auto-approval catalog (e.g. 'status').",
   values: "The values the check accepts. Several values mean any of them; checks that take no value use an empty list.",
   requestInputs:
@@ -5394,6 +5542,8 @@ export const APPROVAL_POLICY_AUTO_APPROVAL = {
   optionsSubject: "The subject the condition checks.",
   optionsConstraint: "The check to list values for.",
   optionsSearch: "Filters the values by this text.",
+  optionsSelected:
+    "A JSON array of the values already picked in this condition, which the options always include so each keeps its label.",
   optionsSiblings:
     "A JSON object of the values already picked in the rule's other conditions, keyed by constraint, which narrows the values listed (e.g. statuses for the picked projects)."
 };
@@ -5415,4 +5565,11 @@ export const AWS_HONEY_TOKENS = {
     unavailableReason:
       "Why this AWS account cannot be used now, or null when it can. For `instance`: `instance-not-configured` means the instance has no managed signing key, `incomplete-aws-credentials` means only one of the managed AWS access key ID and secret access key is set, and `invalid-role-arn` means the managed role ARN is not an IAM role ARN. For `organization`: `account-not-connected` means your organization has not connected an AWS account, and `stack-verification-pending` means the CloudFormation stack is not verified yet."
   }
+};
+
+export const ORG_AI_CONFIG = {
+  connectionId:
+    "The ID of the organization-level Anthropic App Connection the organization's AI features use. Null turns AI features off.",
+  model: "The ID of the Anthropic model to use, such as 'claude-sonnet-4-5'. Required when connectionId is set.",
+  connectionName: "The name of the App Connection."
 };

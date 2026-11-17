@@ -5,6 +5,7 @@ import {
   IdCard,
   Info,
   ListChecks,
+  Plug,
   Package,
   Server,
   Settings,
@@ -12,6 +13,7 @@ import {
 } from "lucide-react";
 
 import { useAgentVaultIntro } from "@app/components/agent-vault/AgentVaultIntro";
+import { AgentVaultFreeUsageMeter } from "@app/components/agent-vault/FreeUsage";
 import {
   SetupChecklist,
   useAgentVaultSetupProgress
@@ -27,7 +29,7 @@ import { isAgentVaultSessionLogBlockedByPlan } from "@app/helpers/agentVaultSess
 import {
   useGetAgentVaultSessionLogHealth,
   useGetAgentVaultSessionLogSettings,
-  useListGrantedAgentVaultAccessBundlesRequiringSetup
+  useListGrantedAgentVaultServicesRequiringSetup
 } from "@app/hooks/api/agentVault";
 import { ProjectMembershipRole } from "@app/hooks/api/roles/types";
 
@@ -44,18 +46,19 @@ export const AgentVaultNav = ({ onSubmenuOpen }: { onSubmenuOpen: (submenu: Subm
   const sessionLogSettings = sessionLogState?.settings ?? null;
   const { data: sessionLogHealth } = useGetAgentVaultSessionLogHealth(projectId, isAdmin);
   const { subscription } = useSubscription();
-  // An admin can use any bundle, but the nav only nags about the ones granted to them.
-  const { data: grantedRequiringSetup } =
-    useListGrantedAgentVaultAccessBundlesRequiringSetup(projectId);
+  // Services is where a member sets up their personal values. An admin can use any bundle, but the nav only nags about
+  // services in the ones granted to them.
+  const { data: grantedRequiringSetup } = useListGrantedAgentVaultServicesRequiringSetup(projectId);
   const needsSetup = Boolean(grantedRequiringSetup?.totalCount);
   const setupProgress = useAgentVaultSetupProgress();
 
   const accessItems: NavItem[] = [
     { label: "Sessions", icon: IdCard, pathSuffix: "sessions" },
+    { label: "Access Bundles", icon: Package, pathSuffix: "access-bundles" },
     {
-      label: "Access Bundles",
-      icon: Package,
-      pathSuffix: "access-bundles",
+      label: "Services",
+      icon: Plug,
+      pathSuffix: "services",
       alertVariant: needsSetup ? "warning" : undefined
     },
     { label: "Variables", icon: Braces, pathSuffix: "variables" },
@@ -104,6 +107,7 @@ export const AgentVaultNav = ({ onSubmenuOpen }: { onSubmenuOpen: (submenu: Subm
       </SidebarCollapsibleGroup>
       <div className="mt-auto" />
       <SetupChecklist progress={setupProgress} />
+      <AgentVaultFreeUsageMeter />
       <SidebarMenu>
         {setupProgress.canRestore && (
           <SidebarMenuItem>

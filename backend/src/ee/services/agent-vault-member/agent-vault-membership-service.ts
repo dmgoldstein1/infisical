@@ -22,8 +22,6 @@ import { BadRequestError, ForbiddenRequestError, NotFoundError } from "@app/lib/
 import { TGenericPermission } from "@app/lib/types";
 import { ActorType } from "@app/services/auth/auth-type";
 import { TIdentityDALFactory } from "@app/services/identity/identity-dal";
-import { AgentVaultIdentities } from "@app/services/license-client";
-import { TUsageMeteringServiceFactory } from "@app/services/license-client/usage";
 import { lockMembershipsById, TMembershipDALFactory } from "@app/services/membership/membership-dal";
 import { assertWillRetainProjectAdmin } from "@app/services/membership/membership-fns";
 import { TMembershipRoleDALFactory } from "@app/services/membership/membership-role-dal";
@@ -57,7 +55,6 @@ type TAgentVaultMembershipServiceFactoryDep = {
   userAliasDAL: Pick<TUserAliasDALFactory, "findBySsoExternalIds">;
   orgDAL: Pick<TOrgDALFactory, "findById" | "findActorsWithActiveOrgAccess" | "lockActorsForOrgAccess">;
   permissionService: Pick<TPermissionServiceFactory, "getProjectPermission">;
-  usageMeteringService: Pick<TUsageMeteringServiceFactory, "emitForProject">;
 } & TClearPersonalValuesDeps;
 
 export type TAgentVaultMembershipServiceFactory = ReturnType<typeof agentVaultMembershipServiceFactory>;
@@ -137,7 +134,6 @@ export const agentVaultMembershipServiceFactory = ({
   userAliasDAL,
   orgDAL,
   permissionService,
-  usageMeteringService,
   agentVaultPersonalValueDAL,
   userGroupMembershipDAL,
   identityGroupMembershipDAL
@@ -525,7 +521,6 @@ export const agentVaultMembershipServiceFactory = ({
       };
     });
 
-    if (written.created.length) usageMeteringService.emitForProject(projectId, AgentVaultIdentities.key);
     return { members: written.created, skipped: written.skipped };
   };
 
@@ -714,7 +709,6 @@ export const agentVaultMembershipServiceFactory = ({
       };
     });
 
-    if (written.removed.length) usageMeteringService.emitForProject(projectId, AgentVaultIdentities.key);
     return { members: written.removed, skipped: written.skipped };
   };
   return {

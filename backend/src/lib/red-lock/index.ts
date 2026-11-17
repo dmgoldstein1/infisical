@@ -1,7 +1,7 @@
 /* eslint-disable */
 // Source code credits: https://github.com/mike-marcacci/node-redlock
 // Taken to avoid external dependency
-import { EventEmitter } from "events";
+import { EventEmitter } from "node:events";
 import { Redis as IORedisClient, Cluster as IORedisCluster } from "ioredis";
 
 import { crypto } from "@app/lib/crypto/cryptography";
@@ -141,6 +141,13 @@ export class ExecutionError extends Error {
     this.name = "ExecutionError";
   }
 }
+
+export const isLockHeldByAnotherOwner = async (error: ExecutionError) => {
+  const attempts = await Promise.all(error.attempts);
+  return attempts.some((attempt) =>
+    [...attempt.votesAgainst.values()].some((vote) => vote instanceof ResourceLockedError)
+  );
+};
 
 /*
  * An object of this type is returned when a resource is successfully locked. It

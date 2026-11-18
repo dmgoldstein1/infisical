@@ -1,19 +1,6 @@
 name: Upgrade impact and Helm chart release PR
 
-on:
-  workflow_dispatch:
-    inputs:
-      tag:
-        description: "Stable release tag to add upgrade impact data for and point the chart at, for example v0.167.10"
-        required: true
-        type: string
-  workflow_call:
-    inputs:
-      tag:
-        description: "Stable release tag to add upgrade impact data for and point the chart at, for example v0.167.10"
-        required: true
-        type: string
-
+on: workflow_dispatch
 permissions:
   contents: write
   pull-requests: write

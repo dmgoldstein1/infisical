@@ -14,7 +14,7 @@ import { TKeyValueStoreDALFactory } from "./key-value-store-dal";
 export const PgSqlLock = {
   BootUpMigration: 2023,
   SuperAdminInit: 2024,
-  KmsRootKeyInit: 2025,
+  // 2025 is taken by KMS Core's root key lock (KMS_LOCK_IDS in kms-core-locks.ts).
   SanitizedSchemaGeneration: 2026,
   EmailDomainCreationLock: () => pgAdvisoryLockHashText(`org-email-domain-creation`),
   SecretRotationV2Creation: (folderId: string) => pgAdvisoryLockHashText(`secret-rotation-v2-creation:${folderId}`),
@@ -40,10 +40,6 @@ export const PgSqlLock = {
   ClearAgentVaultPersonalValues: (projectId: string) =>
     pgAdvisoryLockHashText(`clear-agent-vault-personal-values:${projectId}`),
   AccessSharedSecret: (sharedSecretId: string) => pgAdvisoryLockHashText(`access-shared-secret:${sharedSecretId}`),
-  KmsOrgKeyCreation: (orgId: string) => pgAdvisoryLockHashText(`kms-org-key:${orgId}`),
-  KmsOrgDataKeyCreation: (orgId: string) => pgAdvisoryLockHashText(`kms-org-data-key:${orgId}`),
-  KmsProjectKeyCreation: (projectId: string) => pgAdvisoryLockHashText(`kms-project-key:${projectId}`),
-  KmsProjectDataKeyCreation: (projectId: string) => pgAdvisoryLockHashText(`kms-project-data-key:${projectId}`),
   ScimGroupUpdate: (groupId: string) => pgAdvisoryLockHashText(`scim-group-update:${groupId}`),
   OrgAccessReconcile: (actorId: string) => pgAdvisoryLockHashText(`org-access-reconcile:${actorId}`),
   OrgAccessReconcileScope: (rootOrgId: string) => pgAdvisoryLockHashText(`org-access-reconcile-scope:${rootOrgId}`),
@@ -146,8 +142,6 @@ export const KeyStorePrefixes = {
   ProjectFolderAccessData: (projectId: string, folderId: string, actorType: string, page: string) =>
     `project-folder-access-data:${projectId}:${folderId}:${actorType}:${page}` as const,
 
-  KmsProjectSecretManagerMaterial: (projectId: string) => `kms-project-sm-material:${projectId}` as const,
-
   PkiAcmeNonce: (nonce: string) => `pki-acme-nonce:${nonce}` as const,
   ScepIntuneAccess: (connectionId: string, connectionUpdatedAt: Date) =>
     `scep-intune-access:${connectionId}:${connectionUpdatedAt.getTime()}` as const,
@@ -218,6 +212,8 @@ export const KeyStorePrefixes = {
   OrgSecretScanningFindingsCount: (orgId: string) => `org-secret-scanning-findings-count:${orgId}` as const,
   CertActivityTrend: (projectId: string, range: string) => `cert-activity-trend:${projectId}:${range}` as const,
   CertPqcTrend: (projectId: string, range: string) => `cert-pqc-trend:${projectId}:${range}` as const,
+  SigningActivityTrend: (projectId: string, range: string, signerId?: string) =>
+    `signing-activity-trend:${projectId}:${range}:${signerId ?? "all"}` as const,
   RefreshTokenGrace: (sessionId: string) => `refresh-token-grace:${sessionId}` as const,
   EmailSignupOtpHash: (hash: string) => `email-signup-otp:${hash}:hash` as const,
   EmailSignupOtpLock: (hash: string) => `email-signup-otp:${hash}:lock` as const,
@@ -328,6 +324,7 @@ export const KeyStoreTtls = {
   PkiCertificateQuotaCountInSeconds: 60,
   OauthAuthorizationCodeInSeconds: 600, // 10 minutes
   DashboardCacheInSeconds: 600, // 10 minutes
+  SigningActivityTrendInSeconds: 60,
   ProjectEnvironmentOperationMarkerInSeconds: 10,
   UserMfaUnlockEmailSentInSeconds: 300, // 5 minutes
   StepUpMfaAttemptWindowInSeconds: 300, // 5 minutes - rolling window for counting failed step-up attempts

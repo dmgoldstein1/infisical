@@ -9,12 +9,11 @@ publish = false
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-ironrdp-pdu = "0.7"
-ironrdp-core = "0.1"
-ironrdp-graphics = "0.7"
-ironrdp-session = "0.8"
-ironrdp-connector = "0.8"
-ironrdp-svc = "0.6"
+ironrdp-pdu = "0.11"
+ironrdp-core = "0.3"
+ironrdp-graphics = "0.11"
+ironrdp-session = "0.13"
+ironrdp-svc = "0.10"
 
 wasm-bindgen = "0.2"
 

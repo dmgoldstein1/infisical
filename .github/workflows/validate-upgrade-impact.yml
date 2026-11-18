@@ -1,6 +1,12 @@
 name: Validate upgrade impact data
 
-on: workflow_dispatch
+on:
+  pull_request:
+    paths:
+      - "upgrade-impact/**"
+      - ".github/workflows/validate-upgrade-impact.yml"
+      - ".github/workflows/bump-helm-infisical-core-app-version.yml"
+
 jobs:
   validate:
     runs-on: ubuntu-latest

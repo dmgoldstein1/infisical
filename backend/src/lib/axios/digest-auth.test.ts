@@ -54,7 +54,7 @@ describe("HTTP digest auth (CodeQL md5 disposition)", () => {
     // digest is a stable, precomputed RFC 2617 vector (see ha1/ha2 below).
     const cnonceHex = "abcdef0123456789abcdef0123456789abcdef0123456789";
     const randomBytesSpy = vi
-      .spyOn(crypto, "randomBytes")
+      .spyOn(crypto as unknown as { randomBytes: (size: number) => Buffer }, "randomBytes")
       .mockReturnValue(Buffer.from(cnonceHex, "hex"));
 
     // Precomputed with MD5 per RFC 2617:

@@ -1,6 +1,9 @@
 name: Release Infisical Core Helm chart
 
 on: workflow_dispatch
+# No workflow-level concurrency group: GitHub cancels a run queued behind a newer one, so a
+# chart version merged between two others would never be published. Runs for different
+# versions are independent; the release job serializes runs for the same version.
 jobs:
   # Skips commits that touch Chart.yaml without a new version, before the slow tests.
   check-version:

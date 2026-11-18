@@ -10,17 +10,12 @@
 //! output matches what a live IronRDP client would render: bitmap RLE,
 //! RDP6 streams, pointer compositing -- all handled upstream.
 
-use ironrdp_connector::connection_activation::ConnectionActivationSequence;
-use ironrdp_connector::{BitmapConfig, Config, ConnectionResult, Credentials, DesktopSize};
 use ironrdp_graphics::image_processing::PixelFormat;
-use ironrdp_pdu::gcc::KeyboardType;
 use ironrdp_pdu::input::fast_path::FastPathInputEvent;
 use ironrdp_pdu::input::mouse::{MousePdu, PointerFlags};
-use ironrdp_pdu::rdp::capability_sets::{BitmapCodecs, MajorPlatformType};
-use ironrdp_pdu::rdp::client_info::{PerformanceFlags, TimezoneInfo};
 use ironrdp_pdu::Action;
 use ironrdp_session::image::DecodedImage;
-use ironrdp_session::{ActiveStage, ActiveStageOutput};
+use ironrdp_session::{ActiveStage, ActiveStageBuilder, ActiveStageOutput};
 use ironrdp_svc::StaticChannelSet;
 use wasm_bindgen::prelude::*;
 
@@ -49,28 +44,26 @@ impl RdpDecoder {
     /// in RGBA32 format.
     #[wasm_bindgen(constructor)]
     pub fn new(width: u16, height: u16) -> RdpDecoder {
-        let desktop_size = DesktopSize { width, height };
         // These channel IDs aren't load-bearing for offline replay — the
         // ActiveStage uses them to route X.224 payloads and we only feed
         // FastPath bytes. Any valid u16s would do.
         let io_channel_id: u16 = 1003;
         let user_channel_id: u16 = 1002;
 
-        let connection_result = ConnectionResult {
-            io_channel_id,
-            user_channel_id,
+        let stage = ActiveStageBuilder {
             static_channels: StaticChannelSet::default(),
-            desktop_size,
+            user_channel_id,
+            io_channel_id,
+            message_channel_id: None,
+            // Decode-only replay never completes connection activation, so
+            // no server-assigned share ID exists. It is only used when
+            // encoding response PDUs, which replay discards.
+            share_id: 0,
+            compression_type: None,
             enable_server_pointer: true,
             pointer_software_rendering: true,
-            connection_activation: ConnectionActivationSequence::new(
-                stub_config(desktop_size),
-                io_channel_id,
-                user_channel_id,
-            ),
-        };
-
-        let stage = ActiveStage::new(connection_result);
+        }
+        .build();
         let image = DecodedImage::new(PixelFormat::RgbA32, width, height);
 
         RdpDecoder {
@@ -91,7 +84,7 @@ impl RdpDecoder {
             1 => Action::FastPath,
             _ => return 0,
         };
-        let outputs = match self.stage.process(&mut self.image, action, bytes) {
+        let outputs = match self.stage.process(&mut self.image, action, bytes, None) {
             Ok(o) => o,
             Err(_) => return 0,
         };
@@ -177,47 +170,5 @@ impl RdpDecoder {
     /// may align differently.
     pub fn stride(&self) -> usize {
         self.image.stride()
-    }
-}
-
-/// Build a minimal Config for ConnectionActivationSequence. The sequence
-/// is only used to interpret server-initiated reactivation PDUs; offline
-/// replay shouldn't hit those. If it does, the decoder will surface the
-/// resulting error up to JS.
-fn stub_config(desktop_size: DesktopSize) -> Config {
-    Config {
-        desktop_size,
-        desktop_scale_factor: 0,
-        enable_tls: false,
-        enable_credssp: false,
-        credentials: Credentials::UsernamePassword {
-            username: String::new(),
-            password: String::new(),
-        },
-        domain: None,
-        client_build: 0,
-        client_name: "infisical-replay".to_owned(),
-        keyboard_type: KeyboardType::IbmEnhanced,
-        keyboard_subtype: 0,
-        keyboard_functional_keys_count: 12,
-        keyboard_layout: 0,
-        ime_file_name: String::new(),
-        bitmap: Some(BitmapConfig {
-            lossy_compression: false,
-            color_depth: 32,
-            codecs: BitmapCodecs(Vec::new()),
-        }),
-        dig_product_id: String::new(),
-        client_dir: String::new(),
-        platform: MajorPlatformType::UNSPECIFIED,
-        hardware_id: None,
-        request_data: None,
-        autologon: false,
-        enable_audio_playback: false,
-        performance_flags: PerformanceFlags::default(),
-        license_cache: None,
-        timezone_info: TimezoneInfo::default(),
-        enable_server_pointer: true,
-        pointer_software_rendering: true,
     }
 }

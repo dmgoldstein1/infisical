@@ -20,4 +20,7 @@ export const rdpdecoder_move_pointer: (a: number, b: number, c: number) => numbe
 export const rdpdecoder_new: (a: number, b: number) => number;
 export const rdpdecoder_stride: (a: number) => number;
 export const rdpdecoder_width: (a: number) => number;
+export const __wbindgen_externrefs: WebAssembly.Table;
 export const __wbindgen_export: (a: number, b: number) => number;
+export const __wbindgen_export2: (a: number, b: number, c: number) => void;
+export const __wbindgen_start: () => void;

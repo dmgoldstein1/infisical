@@ -37,7 +37,7 @@ export class RdpDecoder {
      * `action` is 0 for X.224 and 1 for FastPath; mirrors the tap event
      * emitted by the gateway.
      */
-    feed(action: number, bytes: Uint8Array): number;
+    feed(action: number, bytes: Uint8Array | number[]): number;
     height(): number;
     /**
      * Move the server-rendered pointer sprite to (x, y) and re-composite
@@ -87,7 +87,10 @@ export interface InitOutput {
     readonly rdpdecoder_new: (a: number, b: number) => number;
     readonly rdpdecoder_stride: (a: number) => number;
     readonly rdpdecoder_width: (a: number) => number;
+    readonly __wbindgen_externrefs: WebAssembly.Table;
     readonly __wbindgen_export: (a: number, b: number) => number;
+    readonly __wbindgen_export2: (a: number, b: number, c: number) => void;
+    readonly __wbindgen_start: () => void;
 }
 
 export type SyncInitInput = BufferSource | WebAssembly.Module;

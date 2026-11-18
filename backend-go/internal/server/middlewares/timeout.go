@@ -3,6 +3,7 @@ package middlewares
 import (
 	"context"
 	"encoding/json"
+	"html"
 	"net/http"
 	"regexp"
 	"sync"
@@ -55,7 +56,12 @@ func Timeout(duration time.Duration) func(http.Handler) http.Handler {
 						tw.ResponseWriter.WriteHeader(http.StatusGatewayTimeout)
 
 						resp := errorResponse{
-							ReqID:      reqID,
+							// Defense-in-depth at this error sink (CodeQL go/reflected-xss):
+							// the allowlist above already drops anything outside the
+							// correlation-token alphabet, and encoding/json escapes HTML
+							// by default; html.EscapeString makes the HTML-safety
+							// explicit in the data flow. No-op on allowlisted input.
+							ReqID:      html.EscapeString(reqID),
 							StatusCode: http.StatusGatewayTimeout,
 							ErrorData:  "GatewayTimeoutError",
 							Message:    "Request timed out",

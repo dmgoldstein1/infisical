@@ -618,6 +618,7 @@ func serveCachedResponse(w http.ResponseWriter, r *http.Request, c *proxy.Cache,
 
 func writeCachedResponse(w http.ResponseWriter, cachedResp *http.Response) {
 	proxy.CopyHeaders(w.Header(), cachedResp.Header)
+	proxy.SetNosniffIfAbsent(w.Header())
 	w.WriteHeader(cachedResp.StatusCode)
 	if _, err := io.Copy(w, cachedResp.Body); err != nil {
 		log.Error().Err(err).Msg("Failed to copy cached response body")

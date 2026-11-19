@@ -87,16 +87,17 @@ export const GitHubManifestCallbackPage = () => {
 
     // The GitHub App is already created at this point. Mark the in-progress connection form so it
     // resumes with the new app selected, then send the user back to it to finish the connection.
-    // The return URL above is consumed from memory; drop it from the persisted form so the redirect
-    // target does not remain in Web Storage at rest.
+    // The return URL above is consumed from memory and must not remain in Web Storage at rest, so
+    // rebuild the staged form without it instead of round-tripping the stored object: the staged
+    // return URL is treated as sensitive by static analysis and must never reach the storage sink.
     if (connectionForm) {
-      connectionForm.credentials = {
-        ...(connectionForm.credentials ?? {}),
+      const { returnUrl: _droppedReturnUrl, ...resumedForm } = connectionForm;
+      resumedForm.credentials = {
+        ...(resumedForm.credentials ?? {}),
         gitHubAppId
       };
-      connectionForm.resumeWithGitHubAppId = gitHubAppId;
-      delete connectionForm.returnUrl;
-      localStorage.setItem(GITHUB_CONNECTION_FORM_STORAGE_KEY, JSON.stringify(connectionForm));
+      resumedForm.resumeWithGitHubAppId = gitHubAppId;
+      localStorage.setItem(GITHUB_CONNECTION_FORM_STORAGE_KEY, JSON.stringify(resumedForm));
     }
 
     createNotification({

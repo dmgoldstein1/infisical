@@ -79,10 +79,6 @@ vi.mock("@app/services/certificate-common/certificate-csr-utils", () => ({
   extractCertificateRequestFromCSR: vi.fn().mockReturnValue({ commonName: "different.example.com" })
 }));
 
-vi.mock("@app/services/project/project-fns", () => ({
-  getProjectKmsCertificateKeyId: vi.fn(() => Promise.resolve("mock-kms-id"))
-}));
-
 vi.mock("../../ee/services/certificate-est/certificate-est-fns", () => ({
   convertRawCertsToPkcs7: vi.fn(() => "mocked-pkcs7-response")
 }));
@@ -117,6 +113,7 @@ describe("CertificateEstV3Service", () => {
   };
 
   const mockKmsService = {
+    getProjectCertificateKmsKeyId: vi.fn(() => Promise.resolve("mock-kms-id")),
     decryptWithKmsKey: vi.fn().mockResolvedValue(vi.fn(() => Promise.resolve(Buffer.from("mock-decrypted")))),
     generateKmsKey: vi.fn()
   };
@@ -180,7 +177,8 @@ describe("CertificateEstV3Service", () => {
       certificateAuthorityCertDAL: mockCertificateAuthorityCertDAL,
       certificateDAL: mockCertificateDAL,
       projectDAL: mockProjectDAL,
-      kmsService: mockKmsService,
+      kmsDataKeyService: mockKmsService as never,
+      kmsKeyService: mockKmsService as never,
       licenseService,
       certificateProfileDAL: mockCertificateProfileDAL,
       estEnrollmentConfigDAL: mockEstEnrollmentConfigDAL,

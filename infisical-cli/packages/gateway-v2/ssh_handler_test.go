@@ -105,3 +105,28 @@ func TestSSHExecBudgetClamps(t *testing.T) {
 		t.Fatal("large timeouts should be clamped")
 	}
 }
+
+// Pins the CodeQL go/command-injection disposition for runSSHCommand: the
+// gateway's exec channel exists to run the operator's command on the target
+// (shell interpretation is the feature), so allowlisting command text would
+// break it. The envelope guard below is the mitigation — empty, NUL-bearing
+// and oversized commands are refused before dialing. This test FAILS if the
+// guard is weakened, documenting the keep.
+func TestValidateSSHExecCommandGuardsEnvelope(t *testing.T) {
+	t.Parallel()
+
+	if err := validateSSHExecCommand(""); err == nil {
+		t.Fatal("empty command must be rejected")
+	}
+	if err := validateSSHExecCommand("uptime\x00now"); err == nil {
+		t.Fatal("NUL-bearing command must be rejected")
+	}
+	if err := validateSSHExecCommand(strings.Repeat("x", maxSshExecCommandBytes+1)); err == nil {
+		t.Fatal("oversized command must be rejected")
+	}
+	for _, legit := range []string{"uptime", "df -h / | tail -1", "powershell -NoProfile -Command \"Get-Date\""} {
+		if err := validateSSHExecCommand(legit); err != nil {
+			t.Fatalf("legitimate scanner one-liner %q must pass: %v", legit, err)
+		}
+	}
+}

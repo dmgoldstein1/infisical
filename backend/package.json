@@ -80,7 +80,7 @@
     },
     "nan": "^2.29.0",
     "hono": "^4.13.16",
-    "@hono/node-server": "^2.1.8",
+    "@hono/node-server": "^2.1.6",
     "vite": "^7.3.5",
     "sharp": "^0.35.5",
     "@xmldom/xmldom": "^0.8.13",
@@ -225,7 +225,7 @@
     "@opentelemetry/exporter-metrics-otlp-proto": "^0.220.0",
     "@opentelemetry/exporter-prometheus": "^0.220.0",
     "@opentelemetry/instrumentation": "^0.220.0",
-    "@opentelemetry/instrumentation-http": "^0.220.0",
+    "@opentelemetry/instrumentation-http": "^0.222.0",
     "@opentelemetry/instrumentation-runtime-node": "^0.33.0",
     "@opentelemetry/resources": "~2.9.0",
     "@opentelemetry/sdk-metrics": "~2.9.0",
@@ -333,7 +333,9 @@
     "tweetnacl-util": "^0.15.1",
     "uuid": "^11.1.1",
     "zod": "^3.22.4",
-    "zod-to-json-schema": "^3.24.5"
+    "zod-to-json-schema": "^3.25.2",
+    "hono": "^4.13.16",
+    "@hono/node-server": "^2.1.6"
   },
   "allowScripts": {
     "argon2@0.45.1": true,

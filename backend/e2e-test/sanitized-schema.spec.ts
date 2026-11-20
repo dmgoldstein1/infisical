@@ -1,11 +1,15 @@
 import { readFile } from "node:fs/promises";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 import { Knex } from "knex";
 import pino from "pino";
 import { describe, expect, test } from "vitest";
 
 import { createSanitizedSchema, dropSanitizedSchema } from "@app/db/sanitized-schema";
+
+// vitest 5 forks workers run native ESM with no CJS __dirname shim.
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 declare const testDb: Knex;
 

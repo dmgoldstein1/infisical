@@ -12,7 +12,9 @@ vi.mock("@aws-sdk/client-acm-pca", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@aws-sdk/client-acm-pca")>();
   return {
     ...actual,
-    ACMPCAClient: vi.fn().mockImplementation(() => ({ send }))
+    ACMPCAClient: class {
+      send = send;
+    }
   };
 });
 

@@ -5,6 +5,10 @@ import "tsx/cjs";
 import dotenv from "dotenv";
 import { crypto } from "@app/lib/crypto/cryptography";
 import path from "path";
+import { fileURLToPath } from "url";
+
+// vitest 5 forks workers run native ESM with no CJS __dirname shim.
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 import { seedData1 } from "@app/db/seed-data";
 import { getDatabaseCredentials, initEnvConfig } from "@app/lib/config/env";

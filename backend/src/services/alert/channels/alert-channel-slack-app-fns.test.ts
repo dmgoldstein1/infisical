@@ -15,10 +15,13 @@ const { postMessage, clientOptions } = vi.hoisted(() => ({
 
 vi.mock("@slack/web-api", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@slack/web-api")>()),
-  WebClient: vi.fn().mockImplementation((_token: string, options: unknown) => {
-    clientOptions.push(options);
-    return { chat: { postMessage } };
-  })
+  WebClient: class {
+    chat = { postMessage };
+
+    constructor(_token: string, options: unknown) {
+      clientOptions.push(options);
+    }
+  }
 }));
 
 const ORG_ID = "6f1f6f9e-4a4b-4a4b-8a8a-1f1f1f1f1f1f";

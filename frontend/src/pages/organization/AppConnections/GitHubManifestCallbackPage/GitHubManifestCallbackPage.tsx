@@ -13,6 +13,35 @@ import {
 } from "@app/helpers/appConnections";
 import { AppConnection } from "@app/hooks/api/appConnections/enums";
 
+export type TStoredGitHubConnectionForm = {
+  credentials?: Record<string, unknown>;
+  resumeWithGitHubAppId?: string;
+  returnUrl?: string;
+  // All other staged in-progress fields (name, description, gateway
+  // selection, …) pass through untouched so the connection form can resume
+  // them after the github.com round-trip wipes in-memory state.
+  [key: string]: unknown;
+};
+
+// Rebuild the staged form for the trip back to the connection form: the
+// return URL is consumed from memory and must never reach Web Storage at
+// rest, while every other staged field is preserved so the in-progress form
+// resumes intact. Pinned by GitHubManifestCallbackPage.test.ts.
+export const buildResumedGitHubConnectionForm = (
+  connectionForm: TStoredGitHubConnectionForm,
+  gitHubAppId: string
+): TStoredGitHubConnectionForm => {
+  const { returnUrl: _droppedReturnUrl, ...resumedForm } = connectionForm;
+  return {
+    ...resumedForm,
+    credentials: {
+      ...(resumedForm.credentials ?? {}),
+      gitHubAppId
+    },
+    resumeWithGitHubAppId: gitHubAppId
+  };
+};
+
 export const GitHubManifestCallbackPage = () => {
   const navigate = useNavigate();
   const { orgId } = useParams({ strict: false }) as { orgId: string };
@@ -26,12 +55,6 @@ export const GitHubManifestCallbackPage = () => {
     hasRunRef.current = true;
 
     const { gitHubAppId, slug, installState } = search;
-
-    type TStoredGitHubConnectionForm = {
-      credentials?: Record<string, unknown>;
-      resumeWithGitHubAppId?: string;
-      returnUrl?: string;
-    };
 
     const storedForm = readConnectionFormData<TStoredGitHubConnectionForm>(
       GITHUB_CONNECTION_FORM_STORAGE_KEY
@@ -91,12 +114,7 @@ export const GitHubManifestCallbackPage = () => {
     // rebuild the staged form without it instead of round-tripping the stored object: the staged
     // return URL is treated as sensitive by static analysis and must never reach the storage sink.
     if (connectionForm) {
-      const { returnUrl: _droppedReturnUrl, ...resumedForm } = connectionForm;
-      resumedForm.credentials = {
-        ...(resumedForm.credentials ?? {}),
-        gitHubAppId
-      };
-      resumedForm.resumeWithGitHubAppId = gitHubAppId;
+      const resumedForm = buildResumedGitHubConnectionForm(connectionForm, gitHubAppId);
       localStorage.setItem(GITHUB_CONNECTION_FORM_STORAGE_KEY, JSON.stringify(resumedForm));
     }
 

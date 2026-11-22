@@ -6,7 +6,7 @@ require (
 	github.com/Infisical/infisical-merge v0.0.0
 	github.com/compose-spec/compose-go/v2 v2.9.1
 	github.com/docker/compose/v2 v2.40.3
-	github.com/docker/docker v28.5.1+incompatible
+	github.com/docker/docker v28.5.2+incompatible
 	github.com/docker/go-connections v0.8.2
 	github.com/go-faker/faker/v4 v4.7.0
 	github.com/google/uuid v1.6.0

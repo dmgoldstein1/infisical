@@ -65,6 +65,40 @@ func initializeSSEManager(ctx context.Context, clientId, clientSecret string, ca
 	return proxy.NewSSEManager(ctx, cache, domainURL, streamingClient, httpClient, sseAuthState, pollingFallbackInterval), nil
 }
 
+// streamResponseBody copies an upstream streaming body (SSE) to the client
+// byte-for-byte with periodic flushing. The copy must stay transparent: any
+// content transformation here (e.g. HTML-escaping) corrupts SSE framing and
+// binary streams. Pinned by TestStreamResponseBodyPreservesBytes.
+func streamResponseBody(w http.ResponseWriter, body io.Reader) {
+	// Flush headers immediately for SSE
+	if flusher, ok := w.(http.Flusher); ok {
+		flusher.Flush()
+	}
+
+	// Stream with periodic flushing for SSE events
+	buf := make([]byte, 1024)
+	for {
+		n, err := body.Read(buf)
+		if n > 0 {
+			if _, writeErr := w.Write(buf[:n]); writeErr != nil {
+				log.Error().Err(writeErr).Msg("Failed to write streaming response")
+				return
+			}
+			// Flush after each write to send SSE events immediately
+			if flusher, ok := w.(http.Flusher); ok {
+				flusher.Flush()
+			}
+		}
+		if errors.Is(err, io.EOF) || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			break
+		}
+		if err != nil {
+			log.Error().Err(err).Msg("Failed to read streaming response")
+			return
+		}
+	}
+}
+
 func startProxyServer(cmd *cobra.Command, args []string) {
 	domain, err := cmd.Flags().GetString("domain")
 	if err != nil {
@@ -303,33 +337,7 @@ func startProxyServer(cmd *cobra.Command, args []string) {
 
 		// For streaming endpoints, stream directly instead of buffering
 		if isStreaming {
-			// Flush headers immediately for SSE
-			if flusher, ok := w.(http.Flusher); ok {
-				flusher.Flush()
-			}
-
-			// Stream with periodic flushing for SSE events
-			buf := make([]byte, 1024)
-			for {
-				n, err := resp.Body.Read(buf)
-				if n > 0 {
-					if _, writeErr := w.Write(buf[:n]); writeErr != nil {
-						log.Error().Err(writeErr).Msg("Failed to write streaming response")
-						return
-					}
-					// Flush after each write to send SSE events immediately
-					if flusher, ok := w.(http.Flusher); ok {
-						flusher.Flush()
-					}
-				}
-				if errors.Is(err, io.EOF) || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-					break
-				}
-				if err != nil {
-					log.Error().Err(err).Msg("Failed to read streaming response")
-					return
-				}
-			}
+			streamResponseBody(w, resp.Body)
 			return
 		}
 

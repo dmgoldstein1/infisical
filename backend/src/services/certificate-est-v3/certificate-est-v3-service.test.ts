@@ -27,7 +27,9 @@ vi.mock("@peculiar/x509", () => ({
   GeneralNames: vi.fn(),
   SubjectAlternativeNameExtension: vi
     .fn()
-    .mockImplementation((names: unknown) => ({ type: "2.5.29.17", value: names })),
+    .mockImplementation(function SubjectAlternativeNameExtension(names: unknown) {
+      return { type: "2.5.29.17", value: names };
+    }),
   KeyUsagesExtension: vi.fn(),
   ExtendedKeyUsageExtension: vi.fn(),
   X509Certificate: vi.fn().mockImplementation(function X509Certificate() {
@@ -451,17 +453,21 @@ describe("CertificateEstV3Service", () => {
       defaults: object | null = { subjectAltNames: [{ type: "dns_name", value: "{{request.commonName}}" }] }
     ) => {
       const { Pkcs10CertificateRequest, X509Certificate, GeneralNames } = await import("@peculiar/x509");
-      (Pkcs10CertificateRequest as any).mockImplementation(() => ({
-        subject: "CN=test.example.com",
-        extensions: []
-      }));
+      (Pkcs10CertificateRequest as any).mockImplementation(function Pkcs10CertificateRequestMock() {
+        return {
+          subject: "CN=test.example.com",
+          extensions: []
+        };
+      });
       vi.mocked(extractCertificateRequestFromCSR).mockReturnValueOnce({ commonName: "test.example.com" } as any);
-      (X509Certificate as any).mockImplementation(() => ({
-        subject: "CN=test.example.com",
-        extensions: [{ type: "2.5.29.17", value: "issued-sans" }],
-        rawData: new ArrayBuffer(0)
-      }));
-      (GeneralNames as any).mockImplementation((value: unknown) => {
+      (X509Certificate as any).mockImplementation(function X509CertificateMock() {
+        return {
+          subject: "CN=test.example.com",
+          extensions: [{ type: "2.5.29.17", value: "issued-sans" }],
+          rawData: new ArrayBuffer(0)
+        };
+      });
+      (GeneralNames as any).mockImplementation(function GeneralNamesMock(value: unknown) {
         if (value === "issued-sans") return { items: issuedSans };
         return { items: Array.isArray(value) ? value : [] };
       });

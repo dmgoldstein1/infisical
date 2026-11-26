@@ -1,18 +1,26 @@
 package cmd
 
 import (
+	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
+	"errors"
+	"fmt"
 	"math/big"
+	"net/http"
+	"net/http/httptest"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/Infisical/infisical-merge/packages/agentvault"
+	"github.com/Infisical/infisical-merge/packages/config"
+	"github.com/Infisical/infisical-merge/packages/util"
 	"github.com/spf13/cobra"
 )
 
@@ -62,8 +70,9 @@ func TestBuildAgentVaultRunEnvPointsAtTheProxy(t *testing.T) {
 		"HOME=/home/dev",
 		"HTTPS_PROXY=http://stale:3128",
 		"NO_PROXY=internal.example.com",
+		agentvault.URLEnv + "=https://stale.example.com",
 	}
-	env := envToMap(buildAgentVaultRunEnv(parent, "10.0.1.5:17323", "agv_tok", "/tmp/ca.pem", "metadata.google.internal"))
+	env := envToMap(buildAgentVaultRunEnv(parent, "10.0.1.5:17323", "agv_tok", "/tmp/ca.pem", "metadata.google.internal", "https://eu.infisical.com/api"))
 
 	if env["HOME"] != "/home/dev" {
 		t.Fatalf("unrelated variables must pass through, got HOME=%q", env["HOME"])
@@ -84,10 +93,21 @@ func TestBuildAgentVaultRunEnvPointsAtTheProxy(t *testing.T) {
 			t.Fatalf("%s = %q, want the CA path", k, env[k])
 		}
 	}
+	// The proxy's Infisical, without the /api the agent adds, in place of whatever the operator's environment held.
+	if env[agentvault.URLEnv] != "https://eu.infisical.com" {
+		t.Fatalf("%s = %q, want the URL of the Infisical the proxy named", agentvault.URLEnv, env[agentvault.URLEnv])
+	}
+	if strings.Contains(env["NO_PROXY"], "eu.infisical.com") {
+		t.Fatal("the session's endpoints are answered by the proxy, so Infisical must not be in NO_PROXY")
+	}
+	// A proxy that doesn't name its Infisical leaves the agent without the variable, rather than with a stale one.
+	if old := envToMap(buildAgentVaultRunEnv(parent, "10.0.1.5:17323", "agv_tok", "", "", "")); old[agentvault.URLEnv] != "" {
+		t.Fatalf("%s = %q behind a proxy that named no Infisical", agentvault.URLEnv, old[agentvault.URLEnv])
+	}
 }
 
 func TestBuildAgentVaultRunEnvWithoutCaTrustSetsNoTrustVariables(t *testing.T) {
-	env := envToMap(buildAgentVaultRunEnv([]string{"SSL_CERT_FILE=/etc/ssl/corp.pem"}, "proxy:17323", "agv_tok", "", ""))
+	env := envToMap(buildAgentVaultRunEnv([]string{"SSL_CERT_FILE=/etc/ssl/corp.pem"}, "proxy:17323", "agv_tok", "", "", ""))
 	if env["SSL_CERT_FILE"] != "/etc/ssl/corp.pem" {
 		t.Fatalf("--no-ca-trust must leave the operator's own trust variables alone, got %q", env["SSL_CERT_FILE"])
 	}
@@ -282,7 +302,7 @@ func TestResolveAgentVaultSessionTokenWithNeitherSourceIsEmpty(t *testing.T) {
 func TestBuildAgentVaultRunEnvDropsAStaleSessionTokenVariable(t *testing.T) {
 	parent := []string{agentVaultSessionTokenEnv + "=agv_stale", "PATH=/usr/bin"}
 
-	env := buildAgentVaultRunEnv(parent, "10.0.1.5:17323", "agv_minted", "", "")
+	env := buildAgentVaultRunEnv(parent, "10.0.1.5:17323", "agv_minted", "", "", "")
 
 	for _, kv := range env {
 		if strings.Contains(kv, "agv_stale") {
@@ -298,7 +318,7 @@ func TestBuildAgentVaultRunEnvKeepsTheVariableThatHoldsThisSession(t *testing.T)
 	// Removing it here would hide nothing: the same token is the proxy password either way.
 	parent := []string{agentVaultSessionTokenEnv + "=agv_this_run", "PATH=/usr/bin"}
 
-	env := buildAgentVaultRunEnv(parent, "10.0.1.5:17323", "agv_this_run", "", "")
+	env := buildAgentVaultRunEnv(parent, "10.0.1.5:17323", "agv_this_run", "", "", "")
 
 	var kept bool
 	for _, kv := range env {
@@ -436,6 +456,179 @@ func TestDecideAgentVaultSessionTieErrorNamesBothVariables(t *testing.T) {
 	for _, want := range []string{agentVaultSessionTokenEnv, agentVaultAccessBundleEnv, "--session-token", "--access-bundle"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("the message should name %q, got %q", want, err)
+		}
+	}
+}
+
+func TestRevocationTokenGivesUpOnALoginThatNeverAnswers(t *testing.T) {
+	release := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-r.Context().Done():
+		case <-release:
+		}
+	}))
+	t.Cleanup(srv.Close)
+	t.Cleanup(func() { close(release) })
+	old := config.INFISICAL_URL
+	config.INFISICAL_URL = srv.URL + "/api"
+	t.Cleanup(func() { config.INFISICAL_URL = old })
+	t.Setenv(util.INFISICAL_UNIVERSAL_AUTH_CLIENT_ID_NAME, "id")
+	t.Setenv(util.INFISICAL_UNIVERSAL_AUTH_CLIENT_SECRET_NAME, "secret")
+
+	cmd := &cobra.Command{}
+	cmd.Flags().String("client-id", "", "")
+	cmd.Flags().String("client-secret", "", "")
+	ctx, cancel := context.WithTimeout(t.Context(), 200*time.Millisecond)
+	defer cancel()
+
+	start := time.Now()
+	if _, err := revocationToken(ctx, cmd, util.BestEffortRetryPolicy()); err == nil {
+		t.Fatal("a login that never answered returned a token")
+	}
+	if waited := time.Since(start); waited > 3*time.Second {
+		t.Fatalf("the login held the run for %s", waited)
+	}
+}
+
+func labelCmd(t *testing.T, args ...string) *cobra.Command {
+	t.Helper()
+	cmd := &cobra.Command{Use: "run", Run: func(*cobra.Command, []string) {}}
+	cmd.Flags().String("label", "", "")
+	if err := cmd.Flags().Parse(args); err != nil {
+		t.Fatal(err)
+	}
+	return cmd
+}
+
+func TestResolveAgentVaultSessionLabelTrimsTheFlag(t *testing.T) {
+	label, err := resolveAgentVaultSessionLabel(labelCmd(t, "--label", "  nightly deploy  "), "", agentVaultSourceNone)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if label != "nightly deploy" {
+		t.Errorf("label = %q, want %q", label, "nightly deploy")
+	}
+}
+
+func TestResolveAgentVaultSessionLabelWithoutTheFlagIsEmpty(t *testing.T) {
+	// An empty label is what keeps the key out of the request body.
+	label, err := resolveAgentVaultSessionLabel(labelCmd(t), "agv_token", agentVaultSourceFlag)
+	if err != nil || label != "" {
+		t.Errorf("label, err = %q, %v; want empty and no error", label, err)
+	}
+}
+
+func TestResolveAgentVaultSessionLabelRefusesASessionToken(t *testing.T) {
+	for _, tc := range []struct {
+		source agentVaultSource
+		names  string
+	}{
+		{agentVaultSourceFlag, "--session-token"},
+		{agentVaultSourceEnv, agentVaultSessionTokenEnv},
+	} {
+		_, err := resolveAgentVaultSessionLabel(labelCmd(t, "--label", "nightly deploy"), "agv_token", tc.source)
+		if err == nil {
+			t.Fatalf("token from %s: want an error", tc.names)
+		}
+		if !strings.Contains(err.Error(), tc.names) || !strings.Contains(err.Error(), "--label") {
+			t.Errorf("the message should name --label and %q, got %q", tc.names, err)
+		}
+	}
+}
+
+func metadataCmd(t *testing.T, args ...string) *cobra.Command {
+	t.Helper()
+	cmd := &cobra.Command{Use: "run", Run: func(*cobra.Command, []string) {}}
+	cmd.Flags().StringArray("metadata", nil, "")
+	if err := cmd.Flags().Parse(args); err != nil {
+		t.Fatal(err)
+	}
+	return cmd
+}
+
+func TestParseAgentVaultSessionMetadata(t *testing.T) {
+	got, err := parseAgentVaultSessionMetadata([]string{" runId = 8812 ", "query=a=b"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]string{"runId": "8812", "query": "a=b"}
+	if len(got) != len(want) {
+		t.Fatalf("got %v, want %v", got, want)
+	}
+	for key, value := range want {
+		if got[key] != value {
+			t.Errorf("%s = %q, want %q", key, got[key], value)
+		}
+	}
+
+	if got, err := parseAgentVaultSessionMetadata(nil); err != nil || got != nil {
+		t.Errorf("no values: got %v, %v; want nil and no error", got, err)
+	}
+}
+
+func TestParseAgentVaultSessionMetadataRefusesAMalformedPair(t *testing.T) {
+	for _, value := range []string{"runId", "=8812", "  =8812", ""} {
+		_, err := parseAgentVaultSessionMetadata([]string{value})
+		if err == nil || err.Error() != "--metadata takes key=value, such as --metadata runId=8812" {
+			t.Errorf("%q: err = %v", value, err)
+		}
+	}
+}
+
+func TestParseAgentVaultSessionMetadataRefusesAnEmptyValue(t *testing.T) {
+	for _, value := range []string{"flag=", "flag=   "} {
+		_, err := parseAgentVaultSessionMetadata([]string{value})
+		if err == nil || err.Error() != "--metadata takes key=value with a non-empty value, such as --metadata runId=8812" {
+			t.Errorf("%q: err = %v", value, err)
+		}
+	}
+}
+
+func TestParseAgentVaultSessionMetadataRefusesARepeatedKey(t *testing.T) {
+	_, err := parseAgentVaultSessionMetadata([]string{"runId=1", " runId =2"})
+	if err == nil || !strings.Contains(err.Error(), `"runId"`) {
+		t.Errorf("err = %v, want one naming runId", err)
+	}
+}
+
+func TestResolveAgentVaultSessionMetadataRefusesASessionToken(t *testing.T) {
+	for _, tc := range []struct {
+		source agentVaultSource
+		names  string
+	}{
+		{agentVaultSourceFlag, "--session-token"},
+		{agentVaultSourceEnv, agentVaultSessionTokenEnv},
+	} {
+		_, err := resolveAgentVaultSessionMetadata(metadataCmd(t, "--metadata", "runId=8812"), "agv_token", tc.source)
+		if err == nil {
+			t.Fatalf("token from %s: want an error", tc.names)
+		}
+		if !strings.Contains(err.Error(), tc.names) || !strings.Contains(err.Error(), "--metadata") {
+			t.Errorf("the message should name --metadata and %q, got %q", tc.names, err)
+		}
+	}
+
+	metadata, err := resolveAgentVaultSessionMetadata(metadataCmd(t, "--metadata", "runId=8812"), "", agentVaultSourceNone)
+	if err != nil || metadata["runId"] != "8812" {
+		t.Errorf("minting: got %v, %v", metadata, err)
+	}
+}
+
+func TestAgentVaultLoginReadErrorShowsAllButAMissingLogin(t *testing.T) {
+	if err := agentVaultLoginReadError(nil); err != nil {
+		t.Fatalf("no error: %v", err)
+	}
+	if err := agentVaultLoginReadError(util.ErrUserNotLoggedIn); err != nil {
+		t.Fatalf("a missing login should go to the sign-in path, not be shown as an error: %v", err)
+	}
+	for _, want := range []error{
+		fmt.Errorf("%w: profile 'work' belongs to eu.infisical.com", util.ErrProfileDomainMismatch),
+		fmt.Errorf("%w: profile 'work' does not exist", util.ErrProfileNotFound),
+		errors.New("failed to fetch credentials from keyring because [err=locked]"),
+	} {
+		if got := agentVaultLoginReadError(want); got != want {
+			t.Fatalf("got %v, want %v", got, want)
 		}
 	}
 }

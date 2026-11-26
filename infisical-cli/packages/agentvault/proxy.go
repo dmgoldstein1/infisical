@@ -11,10 +11,13 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
+	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 )
 
@@ -28,6 +31,9 @@ const (
 	// No server-level Read/WriteTimeout: they would cut CONNECT hijacks and long streaming responses.
 	frontReadHeaderTimeout = 30 * time.Second
 	frontIdleTimeout       = 5 * time.Minute
+	// How long a new connection on the HTTP port has to send its first byte, which says whether it speaks TLS.
+	// Every client speaks first, so this only bounds a connection that says nothing.
+	doorPeekTimeout = 5 * time.Second
 
 	// The write timeouts are absolute deadlines set at request start, so they bound only a response that
 	// has produced nothing yet.
@@ -62,15 +68,23 @@ const (
 	decisionPassthrough = "passthrough"
 	decisionBlocked     = "blocked"
 	decisionError       = "error"
+	// The session's services list, which the proxy gets from Infisical for the session.
+	decisionDiscovery = "discovery"
+	// The session's skills, which the proxy gets from Infisical for the session.
+	decisionSkills = "skills"
 )
 
 type Options struct {
-	Port       int
+	Port int
+	// Empty binds every interface.
+	ListenHost string
 	DataDir    string
 	ProxyToken func() string
 	ProxyID    string
 	ProxyName  string
 	OwnCa      *OwnCa
+	// Nil leaves the SOCKS5 listener off.
+	Socks5 *Socks5Options
 
 	OnReady func()
 }
@@ -80,7 +94,13 @@ type proxyServer struct {
 	ca          *caManager
 	cache       *sessionCache
 	sessionLogs *sessionLogRecorder
+	usage       *usageReporter
 	transport   http.RoundTripper
+	// SOCKS5 traffic that no service names goes out through this one, which refuses private destinations
+	// when it dials. Its own pool, so it never reuses a connection the unchecked transport opened.
+	guardedTransport   http.RoundTripper
+	socks5AllowPrivate bool
+	lastNotWebWarn     atomic.Int64
 
 	configMu sync.RWMutex
 	config   ProxyConfig
@@ -91,6 +111,13 @@ type proxyServer struct {
 	legacy    bool
 
 	saturationOnce sync.Once
+
+	sseStreams sseStreamRegistry
+
+	lateNativeLogs lateNativeLogs
+	refusalLogs    refusalLimiter
+	// Open database and SSH tunnels across every session, held under maxNativeTunnels.
+	nativeTunnels atomic.Int64
 }
 
 func (ps *proxyServer) currentConfig() ProxyConfig {
@@ -174,35 +201,96 @@ func (ps *proxyServer) dispatch(w http.ResponseWriter, r *http.Request) {
 const proxyRevokedBody = "this proxy's access has been revoked"
 
 func (ps *proxyServer) denyAtGate(w http.ResponseWriter, sessionToken, hostname, port string, err error) {
-	if isProxyTokenRejected(err) {
-		log.Error().
-			Err(err).
-			Str("host", net.JoinHostPort(hostname, port)).
-			Str("sessionKey", sessionKey(sessionToken)).
-			Str("decision", decisionError).
-			Int("status", http.StatusServiceUnavailable).
-			Msg("agent-vault: refused, Infisical rejected this proxy's token")
-		http.Error(w, proxyRevokedBody, http.StatusServiceUnavailable)
-		return
-	}
-	if isSessionGone(err) {
-		log.Warn().
-			Str("host", net.JoinHostPort(hostname, port)).
-			Str("sessionKey", sessionKey(sessionToken)).
-			Str("decision", decisionBlocked).
-			Int("status", http.StatusForbidden).
-			Msg("agent-vault: refused, the session is no longer valid")
-		http.Error(w, "the session is no longer valid", http.StatusForbidden)
-		return
-	}
-	log.Error().
-		Err(err).
+	refusal := classifyGateRefusal(err)
+	ps.limitedRefusalEvent("http", refusal, err).
 		Str("host", net.JoinHostPort(hostname, port)).
 		Str("sessionKey", sessionKey(sessionToken)).
-		Str("decision", decisionError).
-		Int("status", http.StatusBadGateway).
-		Msg("agent-vault: refused, the session could not be resolved")
-	http.Error(w, "failed to resolve the session", http.StatusBadGateway)
+		Str("decision", refusal.decision).
+		Int("status", refusal.status).
+		Msg(refusal.msg)
+	writeProxyError(w, refusal.status, refusal.decision, refusal.code, refusal.body)
+}
+
+const gateRefusalWarnEvery = time.Minute
+
+// An agent that keeps calling on a refused session, or a flood of made-up tokens, would otherwise write a line per
+// attempt. The first refusal of each kind in a minute keeps its usual line, with how many were held back since; the
+// rest go to debug.
+type refusalLimiter struct {
+	mu      sync.Mutex
+	entries map[string]*refusalLog
+}
+
+type refusalLog struct {
+	last       time.Time
+	suppressed int
+}
+
+func (l *refusalLimiter) admit(key string, now time.Time) (emit bool, suppressed int) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.entries == nil {
+		l.entries = make(map[string]*refusalLog)
+	}
+	entry := l.entries[key]
+	if entry == nil {
+		entry = &refusalLog{}
+		l.entries[key] = entry
+	}
+	if now.Sub(entry.last) < gateRefusalWarnEvery {
+		entry.suppressed++
+		return false, 0
+	}
+	suppressed = entry.suppressed
+	entry.last, entry.suppressed = now, 0
+	return true, suppressed
+}
+
+// Keyed by door as well, so a flood on one door never hides the first refusal on another.
+func (ps *proxyServer) limitedRefusalEvent(door string, refusal gateRefusal, err error) *zerolog.Event {
+	emit, suppressed := ps.refusalLogs.admit(door+" "+refusal.msg, time.Now())
+	if !emit {
+		refusal.event.Discard()
+		return log.Debug().Err(err)
+	}
+	if suppressed > 0 {
+		return refusal.event.Int("suppressedSinceLast", suppressed)
+	}
+	return refusal.event
+}
+
+type gateRefusal struct {
+	event    *zerolog.Event
+	decision string
+	status   int
+	code     string
+	body     string
+	msg      string
+}
+
+// Shared by both doors so a refused session reads the same in the log whichever way it arrived.
+func classifyGateRefusal(err error) gateRefusal {
+	if isProxyTokenRejected(err) {
+		return gateRefusal{log.Error().Err(err), decisionError, http.StatusServiceUnavailable, errorCodeProxyRevoked, proxyRevokedBody,
+			"agent-vault: refused, Infisical rejected this proxy's token"}
+	}
+	if isFreeLimitReached(err) {
+		return gateRefusal{log.Warn(), decisionBlocked, http.StatusForbidden, errorCodeFreeLimitReached, freeLimitReachedBody(err),
+			"agent-vault: refused, this organization used its free Agent Vault requests for this month"}
+	}
+	if isSessionGone(err) {
+		return gateRefusal{log.Warn(), decisionBlocked, http.StatusForbidden, errorCodeSessionInvalid, sessionInvalidRefusal,
+			"agent-vault: refused, the session is no longer valid, or it belongs to a different Agent Vault project than this proxy"}
+	}
+	return gateRefusal{log.Error().Err(err), decisionError, http.StatusBadGateway, errorCodeSessionUnresolvable, "failed to resolve the session",
+		"agent-vault: refused, the session could not be resolved"}
+}
+
+// A well-formed token is enough to open a tunnel to the proxy's own Infisical: inside it, every request checks the
+// session itself, so a refused session's reason reaches the agent as JSON rather than as a failed CONNECT it can't
+// read. A token that isn't one never gets that far.
+func infisicalHostDefersGate(hostname, port, sessionToken string) bool {
+	return isProxyInfisicalHost(hostname, port) && plausibleSessionToken(sessionToken)
 }
 
 func (ps *proxyServer) handleConnect(w http.ResponseWriter, r *http.Request) {
@@ -219,11 +307,29 @@ func (ps *proxyServer) handleConnect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Resolve before the DNS lookup below and the leaf minting further down, so an unauthenticated caller
-	// cannot make the proxy work on their behalf.
-	if _, err := ps.cache.get(sessionToken); err != nil {
-		ps.denyAtGate(w, sessionToken, hostname, port, err)
+	if serviceName, ok := nativeServiceName(hostname); ok {
+		ps.handleNativeConnect(w, r, sessionToken, serviceName)
 		return
+	}
+
+	// Resolve before the leaf minting further down, so an unauthenticated caller cannot make the proxy work
+	// on their behalf. The proxy's own Infisical checks the session inside the tunnel instead, so a refused session
+	// still gets a tunnel there, but not the Infisical's URL.
+	var refused *gateRefusal
+	if !infisicalHostDefersGate(hostname, port, sessionToken) {
+		if _, err := ps.cache.get(sessionToken); err != nil {
+			ps.denyAtGate(w, sessionToken, hostname, port, err)
+			return
+		}
+	} else if _, err := ps.cache.get(sessionToken); err != nil {
+		// The refusal reaches the agent inside the tunnel, but the operator looks for it here, as for any other door.
+		refusal := classifyGateRefusal(err)
+		refused = &refusal
+		ps.limitedRefusalEvent("http", refusal, err).
+			Str("host", net.JoinHostPort(hostname, port)).
+			Str("sessionKey", sessionKey(sessionToken)).
+			Str("decision", refusal.decision).
+			Msg(refusal.msg)
 	}
 
 	// Private and link-local addresses are reachable, deliberately: an internal API inside the operator's
@@ -246,24 +352,61 @@ func (ps *proxyServer) handleConnect(w http.ResponseWriter, r *http.Request) {
 	}
 	defer clientConn.Close()
 
-	if _, err := clientConn.Write([]byte("HTTP/1.1 200 Connection Established\r\n\r\n")); err != nil {
+	// Names the proxy's Infisical, so agent-vault run can tell the agent where its session's endpoints are. A refused
+	// session gets the refusal's decision instead, so run doesn't take this proxy for one too old to name it.
+	established := "HTTP/1.1 200 Connection Established\r\n"
+	if refused != nil {
+		established += HeaderDecision + ": " + refused.decision + "\r\n" + HeaderError + ": " + refused.code + "\r\n"
+	} else if apiURL := proxyAPIURL(); apiURL != "" {
+		established += HeaderAPIURL + ": " + apiURL + "\r\n"
+	}
+	if _, err := clientConn.Write([]byte(established + "\r\n")); err != nil {
 		return
 	}
 
-	// Node's fetch tunnels http:// targets too and speaks plaintext inside, where every other client sends
-	// absolute-form. A tunnel is opaque bytes to an ordinary proxy, so that works everywhere else; here the
-	// first byte decides: a TLS record starts with 0x16, anything else is plain HTTP and takes the same path
-	// as absolute-form. The port stays the one the CONNECT line named, so a service still only matches if
-	// its pattern covers that port.
-	buffered := newBufferedConn(clientConn)
-	_ = clientConn.SetDeadline(time.Now().Add(tlsHandshakeTimeout))
+	ps.serveIntercepted(clientConn, tunnel{hostname: hostname, port: port, sessionToken: sessionToken}, leaf)
+}
+
+// tunnel is what a connection was opened for, fixed before any byte of the agent's request is read.
+type tunnel struct {
+	scheme       string
+	hostname     string
+	port         string
+	sessionToken string
+	viaSocks5    bool
+}
+
+// serveIntercepted takes over a connection the agent has been told is open to the target, from either door.
+// Node's fetch tunnels http:// targets too and speaks plaintext inside, where every other client sends
+// absolute-form. A tunnel is opaque bytes to an ordinary proxy, so that works everywhere else; here the
+// first byte decides: a TLS record starts with 0x16, anything else is plain HTTP and takes the same path
+// as absolute-form. The port stays the one the tunnel named, so a service still only matches if its
+// pattern covers that port.
+func (ps *proxyServer) serveIntercepted(conn net.Conn, t tunnel, leaf tls.Certificate) {
+	buffered := newBufferedConn(conn)
+	_ = conn.SetDeadline(time.Now().Add(tlsHandshakeTimeout))
 	first, err := buffered.reader.Peek(1)
 	if err != nil {
+		if errors.Is(err, io.EOF) {
+			ps.warnNotWebTraffic(t, "the client closed the connection without sending anything")
+			return
+		}
+		// Nothing arrived in time: a protocol where the server speaks first, such as SMTP or MySQL.
+		ps.warnNotWebTraffic(t, "the client sent nothing")
 		return
 	}
 	if first[0] != tlsRecordTypeHandshake {
-		_ = clientConn.SetDeadline(time.Time{})
-		ps.serveTunnel(buffered, "http", hostname, port, sessionToken)
+		// A SOCKS5 provider sends every TCP flow here, so SSH or a database driver would otherwise get an
+		// HTTP 400 and leave no trace above debug level.
+		if t.viaSocks5 {
+			if head, err := buffered.reader.Peek(4); err != nil || !looksLikeHTTPRequest(head) {
+				ps.warnNotWebTraffic(t, "the client didn't send TLS or an HTTP request")
+				return
+			}
+		}
+		_ = conn.SetDeadline(time.Time{})
+		t.scheme = "http"
+		ps.serveTunnel(buffered, t)
 		return
 	}
 
@@ -275,15 +418,52 @@ func (ps *proxyServer) handleConnect(w http.ResponseWriter, r *http.Request) {
 		NextProtos: []string{"http/1.1"},
 	})
 	if err := tlsConn.Handshake(); err != nil {
-		log.Debug().Err(err).Str("host", net.JoinHostPort(hostname, port)).Msg("agent-vault: tunnel TLS handshake failed")
+		log.Debug().Err(err).Str("host", net.JoinHostPort(t.hostname, t.port)).Msg("agent-vault: tunnel TLS handshake failed")
+		// An HTTP/2-only client such as gRPC, or one that doesn't trust the proxy's CA, ends here.
+		ps.warnNotWebTraffic(t, "the TLS handshake failed: "+err.Error())
 		return
 	}
 	_ = tlsConn.SetDeadline(time.Time{})
 
-	ps.serveTunnel(tlsConn, "https", hostname, port, sessionToken)
+	t.scheme = "https"
+	ps.serveTunnel(tlsConn, t)
 }
 
 const tlsRecordTypeHandshake = 0x16
+
+// Any method in capitals passes, so WebDAV's PROPFIND or MKCOL reach the HTTP parser like GET does. Every
+// method is at least three letters, so a space can only come fourth. SSH ("SSH-") and binary protocols fail.
+func looksLikeHTTPRequest(head []byte) bool {
+	for i, c := range head {
+		if c == ' ' && i == 3 {
+			continue
+		}
+		if c < 'A' || c > 'Z' {
+			return false
+		}
+	}
+	return true
+}
+
+const notWebTrafficWarnEvery = time.Minute
+
+// Only the SOCKS5 door warns: the HTTP door is reached by clients that chose to use a web proxy, and its
+// logs stay as they were. Rate limited, since a sandbox retrying a git push over SSH repeats it constantly.
+func (ps *proxyServer) warnNotWebTraffic(t tunnel, reason string) {
+	if !t.viaSocks5 {
+		return
+	}
+	now := time.Now().UnixNano()
+	last := ps.lastNotWebWarn.Load()
+	if now-last < int64(notWebTrafficWarnEvery) || !ps.lastNotWebWarn.CompareAndSwap(last, now) {
+		return
+	}
+	log.Warn().
+		Str("door", "socks5").
+		Str("host", net.JoinHostPort(t.hostname, t.port)).
+		Str("reason", reason).
+		Msg("agent-vault: closed a SOCKS5 connection the proxy can't handle; it handles only HTTP/1.1 web traffic from clients that trust its CA")
+}
 
 // bufferedConn lets the first byte be peeked and then handed on, to tls.Server or to the plain HTTP
 // server, without the byte being consumed.
@@ -300,11 +480,19 @@ func (b *bufferedConn) Read(p []byte) (int, error) { return b.reader.Read(p) }
 
 // The scheme is the tunnel's, not the inner request's, and the target host comes from the CONNECT line so
 // an agent cannot address one host through a tunnel to another.
-func (ps *proxyServer) serveTunnel(conn net.Conn, scheme, hostname, port, sessionToken string) {
-	listener := newOneShotListener(conn)
+func (ps *proxyServer) serveTunnel(conn net.Conn, t tunnel) {
+	// Only the SOCKS5 door, where E2B passes a sandbox's half-close on as a close_notify. A client on the HTTP
+	// door that closes is taken as gone, so its request is cancelled at once.
+	var halfClose *halfCloseConn
+	served := conn
+	if t.viaSocks5 {
+		halfClose = newHalfCloseConn(conn)
+		served = halfClose
+	}
+	listener := newOneShotListener(served)
 	srv := &http.Server{
 		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			ps.forwardHTTP(w, r, scheme, hostname, port, sessionToken)
+			ps.forwardHTTP(w, r, t)
 		}),
 		ReadHeaderTimeout: tunnelReadHeaderTimeout,
 		ReadTimeout:       tunnelReadTimeout,
@@ -312,12 +500,179 @@ func (ps *proxyServer) serveTunnel(conn net.Conn, scheme, hostname, port, sessio
 		IdleTimeout:       tunnelIdleTimeout,
 		MaxHeaderBytes:    maxRequestHeaderBytes,
 		ConnState: func(_ net.Conn, state http.ConnState) {
+			if halfClose != nil {
+				halfClose.setInRequest(state == http.StateActive)
+				// A client that stopped sending can't send another request, so once its reply is out the
+				// connection is done rather than idling until the timeout.
+				if state == http.StateIdle && halfClose.sawEOF() {
+					_ = halfClose.Close()
+				}
+			}
 			if state == http.StateHijacked || state == http.StateClosed {
 				_ = listener.Close()
 			}
 		},
 	}
 	_ = srv.Serve(listener)
+}
+
+// halfCloseConn keeps a tunnel's reply alive after the client stops sending. A client may write its request and
+// then shut its sending side while it waits for the reply: a TCP FIN on the HTTP door, or a TLS close_notify,
+// which is how E2B passes a sandbox's FIN on to the SOCKS5 door. net/http reads that end of input as the client
+// leaving and cancels the request, so the reply never comes. Here the end of input, once a request has been
+// read, makes reads wait instead, until the connection closes or the read deadline passes. A client that really
+// left mid-request is noticed when the reply can't be written. Outside a request the end of input passes
+// through, so a client that connects and leaves frees its slot at once. A client that left can't be told apart
+// from one that only stopped sending, so the wait is capped: the upstream has a minute to start its reply, and
+// a reply already flowing ends when a write to a client that left fails, or after 10 minutes at most.
+type halfCloseConn struct {
+	net.Conn
+
+	replyStartLimit time.Duration
+	// The Anthropic and OpenAI SDKs give up after 10 minutes.
+	replyLimit time.Duration
+
+	mu        sync.Mutex
+	inRequest bool
+	replied   bool
+	eof       bool
+	eofAt     time.Time
+	closed    bool
+	deadline  time.Time
+	// Closed and replaced whenever the deadline changes or the connection closes, to wake a waiting read.
+	changed chan struct{}
+}
+
+func newHalfCloseConn(c net.Conn) *halfCloseConn {
+	return &halfCloseConn{
+		Conn:            c,
+		replyStartLimit: halfCloseReplyStartLimit,
+		replyLimit:      halfCloseReplyLimit,
+		changed:         make(chan struct{}),
+	}
+}
+
+func (c *halfCloseConn) Read(p []byte) (int, error) {
+	c.mu.Lock()
+	eof, inRequest := c.eof, c.inRequest
+	c.mu.Unlock()
+	if !eof {
+		n, err := c.Conn.Read(p)
+		if !errors.Is(err, io.EOF) {
+			return n, err
+		}
+		c.mu.Lock()
+		c.eof, c.eofAt = true, time.Now()
+		inRequest = c.inRequest
+		c.mu.Unlock()
+		if n > 0 {
+			return n, nil
+		}
+	}
+	if !inRequest {
+		return 0, io.EOF
+	}
+	return 0, c.waitAfterEOF()
+}
+
+// net/http reports StateActive once a request's first bytes are read, and StateIdle after its reply.
+func (c *halfCloseConn) setInRequest(in bool) {
+	c.mu.Lock()
+	c.inRequest = in
+	if in {
+		c.replied = false
+	}
+	c.mu.Unlock()
+}
+
+// The first write of a request's reply moves a waiting read from the start limit to the overall one.
+func (c *halfCloseConn) Write(p []byte) (int, error) {
+	c.mu.Lock()
+	if !c.replied {
+		c.replied = true
+		c.wakeLocked()
+	}
+	c.mu.Unlock()
+	return c.Conn.Write(p)
+}
+
+// net/http stops its background read by setting a read deadline in the past, and ends an idle connection with
+// one in the future, so the wait honours every deadline set while it runs.
+func (c *halfCloseConn) waitAfterEOF() error {
+	for {
+		c.mu.Lock()
+		limit := c.replyStartLimit
+		if c.replied {
+			limit = c.replyLimit
+		}
+		closed, deadline, changed, giveUp := c.closed, c.deadline, c.changed, c.eofAt.Add(limit)
+		c.mu.Unlock()
+		if closed {
+			return net.ErrClosed
+		}
+		// Reported as the end of input, which net/http takes as the client leaving and cancels the request.
+		limitFirst := deadline.IsZero() || giveUp.Before(deadline)
+		end, endErr := deadline, error(os.ErrDeadlineExceeded)
+		if limitFirst {
+			end, endErr = giveUp, io.EOF
+		}
+		wait := time.Until(end)
+		if wait <= 0 {
+			return endErr
+		}
+		timer := time.NewTimer(wait)
+		select {
+		case <-changed:
+			timer.Stop()
+		case <-timer.C:
+			return endErr
+		}
+	}
+}
+
+func (c *halfCloseConn) sawEOF() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.eof
+}
+
+func (c *halfCloseConn) wakeLocked() {
+	close(c.changed)
+	c.changed = make(chan struct{})
+}
+
+func (c *halfCloseConn) SetDeadline(t time.Time) error {
+	c.mu.Lock()
+	c.deadline = t
+	c.wakeLocked()
+	c.mu.Unlock()
+	return c.Conn.SetDeadline(t)
+}
+
+func (c *halfCloseConn) SetReadDeadline(t time.Time) error {
+	c.mu.Lock()
+	c.deadline = t
+	c.wakeLocked()
+	c.mu.Unlock()
+	return c.Conn.SetReadDeadline(t)
+}
+
+func (c *halfCloseConn) Close() error {
+	c.mu.Lock()
+	if !c.closed {
+		c.closed = true
+		c.wakeLocked()
+	}
+	c.mu.Unlock()
+	return c.Conn.Close()
+}
+
+// Kept so net/http can still end its side cleanly (a TLS close_notify or a TCP FIN) before a full close.
+func (c *halfCloseConn) CloseWrite() error {
+	if cw, ok := c.Conn.(interface{ CloseWrite() error }); ok {
+		return cw.CloseWrite()
+	}
+	return nil
 }
 
 // handlePlainForward serves only http:// absolute-form. https:// is rejected so the proxy can never be
@@ -344,15 +699,22 @@ func (ps *proxyServer) handlePlainForward(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	if _, err := ps.cache.get(sessionToken); err != nil {
-		ps.denyAtGate(w, sessionToken, hostname, port, err)
-		return
+	if !infisicalHostDefersGate(hostname, port, sessionToken) {
+		if _, err := ps.cache.get(sessionToken); err != nil {
+			ps.denyAtGate(w, sessionToken, hostname, port, err)
+			return
+		}
 	}
 
-	ps.forwardHTTP(w, r, "http", hostname, port, sessionToken)
+	ps.forwardHTTP(w, r, tunnel{scheme: "http", hostname: hostname, port: port, sessionToken: sessionToken})
 }
 
-func (ps *proxyServer) forwardHTTP(w http.ResponseWriter, r *http.Request, scheme, hostname, port, sessionToken string) {
+func (ps *proxyServer) forwardHTTP(w http.ResponseWriter, r *http.Request, t tunnel) {
+	if route, ok := sessionRouteFor(t, r.URL.Path); ok {
+		ps.serveSessionEndpoint(w, r, t, route)
+		return
+	}
+	scheme, hostname, port := t.scheme, t.hostname, t.port
 	// Before anything reads the path: the policy check, the substitutions and the forward all have to see
 	// the bytes the agent sent, not the ones Go rebuilds.
 	normalizeRequestTarget(r.URL)
@@ -361,7 +723,7 @@ func (ps *proxyServer) forwardHTTP(w http.ResponseWriter, r *http.Request, schem
 	reqPath := truncatePath(requestPath(r))
 	reqMethod := truncateLogged(r.Method, maxLoggedMethodLen)
 
-	resp, matched, outcome, err := ps.forward(r, scheme, hostname, port, sessionToken)
+	resp, matched, outcome, err := ps.forward(r, t)
 
 	// The body is fixed text per outcome, never err.Error(): an APIError carries the control-plane URL and
 	// request id, and a dial error names the upstream address. The detail goes on the log line below.
@@ -369,26 +731,47 @@ func (ps *proxyServer) forwardHTTP(w http.ResponseWriter, r *http.Request, schem
 	decision := decisionPassthrough
 	status := 0
 	body := ""
+	code := ""
+	var refusal *mcpToolRefusal
 	switch {
-	case errors.Is(err, errHostBlocked), errors.Is(err, errPolicyBlocked):
-		decision, status, body = decisionBlocked, http.StatusForbidden, err.Error()
+	case errors.Is(err, errHookDenied):
+		decision, status, code, body = decisionBlocked, http.StatusForbidden, errorCodeHookDenied, outcome.hook.message
+	case errors.Is(err, errHookFailed):
+		decision, status, code, body = decisionError, http.StatusServiceUnavailable, errorCodeHookFailed, hookFailedRequestMessage
+	case errors.As(err, &refusal):
+		decision, status = decisionBlocked, refusal.status
+		if refusal.decision != "" {
+			decision = refusal.decision
+		}
+	case errors.Is(err, errHostBlocked):
+		decision, status, code, body = decisionBlocked, http.StatusForbidden, errorCodeHostNotAllowed, err.Error()
+	case errors.Is(err, errPolicyBlocked):
+		decision, status, code, body = decisionBlocked, http.StatusForbidden, errorCodePolicyBlocked, err.Error()
 	case errors.Is(err, errBodyUnreadable):
 		// The agent's upload broke, so this is its request to retry rather than an upstream or policy failure.
-		decision, status, body = decisionBlocked, http.StatusBadRequest, err.Error()
+		decision, status, code, body = decisionBlocked, http.StatusBadRequest, errorCodeBadRequest, err.Error()
 	case errors.Is(err, errOpaqueTarget):
-		decision, status, body = decisionBlocked, http.StatusBadRequest, errOpaqueTarget.Error()
+		decision, status, code, body = decisionBlocked, http.StatusBadRequest, errorCodeBadRequest, errOpaqueTarget.Error()
+	case errors.Is(err, errPrivateDestination):
+		// The dial error names the address it refused, which would tell the agent about the internal network.
+		decision, status, code, body = decisionBlocked, http.StatusForbidden, errorCodePrivateDestination, errPrivateDestination.Error()
 	case isProxyTokenRejected(err):
-		decision, status, body = decisionError, http.StatusServiceUnavailable, proxyRevokedBody
+		decision, status, code, body = decisionError, http.StatusServiceUnavailable, errorCodeProxyRevoked, proxyRevokedBody
+	case isFreeLimitReached(err):
+		decision, status, code, body = decisionBlocked, http.StatusForbidden, errorCodeFreeLimitReached, freeLimitReachedBody(err)
 	case isSessionGone(err):
-		decision, status, body = decisionBlocked, http.StatusForbidden, "the session is no longer valid"
+		decision, status, code, body = decisionBlocked, http.StatusForbidden, errorCodeSessionInvalid, sessionInvalidRefusal
 	case errors.Is(err, errSessionResolve):
-		decision, status, body = decisionError, http.StatusBadGateway, "failed to resolve the session"
+		decision, status, code, body = decisionError, http.StatusBadGateway, errorCodeSessionUnresolvable, "failed to resolve the session"
 	case err != nil:
-		decision, status, body = decisionError, http.StatusBadGateway, "failed to reach the upstream"
+		decision, status, code, body = decisionError, http.StatusBadGateway, errorCodeUpstreamUnreachable, "failed to reach the upstream"
 	case outcome.brokered:
 		decision, status = decisionBrokered, resp.StatusCode
 	default:
 		status = resp.StatusCode
+	}
+	if decision == decisionBrokered {
+		ps.usage.add(1)
 	}
 
 	event := log.Debug()
@@ -400,13 +783,28 @@ func (ps *proxyServer) forwardHTTP(w http.ResponseWriter, r *http.Request, schem
 	case decisionError:
 		event = log.Error()
 	}
+	// An agent on a refused session is refused again on every request, so these lines are limited like the gate's.
+	if !t.viaSocks5 && (refusesSession(code) || code == errorCodeFreeLimitReached) {
+		if emit, suppressed := ps.refusalLogs.admit("http request "+code, time.Now()); !emit {
+			event.Discard()
+			event = log.Debug()
+		} else if suppressed > 0 {
+			event = event.Int("suppressedSinceLast", suppressed)
+		}
+	}
 	event.Str("method", reqMethod).
 		Str("host", hostname).
 		Str("path", reqPath).
 		Str("decision", decision).
 		Int("status", status)
+	if t.viaSocks5 {
+		event = event.Str("door", "socks5")
+	}
 	if matched != nil {
 		event = event.Str("service", matched.name).Str("accessBundle", matched.accessBundleName)
+	}
+	if outcome.hook != nil {
+		event = outcome.hook.logFields(event)
 	}
 	if outcome.brokered && !strings.EqualFold(scheme, "https") {
 		event = event.Bool("plaintext", true)
@@ -423,9 +821,10 @@ func (ps *proxyServer) forwardHTTP(w http.ResponseWriter, r *http.Request, schem
 
 	// reqPath was taken before forward, so a credential substituted into the path never reaches the record.
 	if outcome.sessionLog != nil {
-		var service, bundle *string
+		var service, bundle, serviceType *string
 		if matched != nil {
-			service, bundle = &matched.name, &matched.accessBundleName
+			kind := toServiceKind(matched.kind)
+			service, bundle, serviceType = &matched.name, &matched.accessBundleName, &kind
 		}
 		ps.sessionLogs.record(outcome.sessionLog, sessionLogRecord{
 			Method:       reqMethod,
@@ -436,11 +835,22 @@ func (ps *proxyServer) forwardHTTP(w http.ResponseWriter, r *http.Request, schem
 			Decision:     decision,
 			Service:      service,
 			AccessBundle: bundle,
+			ServiceType:  serviceType,
+			MCP:          outcome.mcp,
+			Hook:         outcome.hook.sessionLogHook(),
 		})
 	}
 
+	if matched != nil {
+		w.Header().Set(HeaderService, matched.name)
+	}
+	if refusal != nil {
+		w.Header().Set(HeaderDecision, decision)
+		refusal.write(w)
+		return
+	}
 	if err != nil {
-		http.Error(w, body, status)
+		writeProxyError(w, status, decision, code, body)
 		return
 	}
 	defer resp.Body.Close()
@@ -452,14 +862,19 @@ func (ps *proxyServer) forwardHTTP(w http.ResponseWriter, r *http.Request, schem
 			dst.Add(name, v)
 		}
 	}
+	// After the upstream's headers, so an upstream cannot claim a decision the proxy did not make, or name an Infisical
+	// for agent-vault run to trust.
+	dst.Del(HeaderAPIURL)
+	dst.Set(HeaderDecision, decision)
+	if matched != nil {
+		dst.Set(HeaderService, matched.name)
+	} else {
+		dst.Del(HeaderService)
+	}
 	// The status line is already on the wire, so a failure part way through the body cannot be reported
 	// as a status. Returning normally would have net/http finish the chunked encoding and hand the agent
 	// a well-formed truncated 200; aborting drops the connection so the agent sees a failure instead.
-	// Defense-in-depth against reflected content served as HTML: refuse MIME-sniffing unless the
-	// upstream explicitly set its own framing policy. Bodies stay byte-identical (streaming preserved).
-	if dst.Get("X-Content-Type-Options") == "" {
-		dst.Set("X-Content-Type-Options", "nosniff")
-	}
+	// httputil.ReverseProxy does the same for the same reason.
 	w.WriteHeader(resp.StatusCode)
 	fw := &flushingWriter{ResponseWriter: w, rc: http.NewResponseController(w)}
 	if _, copyErr := io.Copy(fw, resp.Body); copyErr != nil {
@@ -470,28 +885,40 @@ func (ps *proxyServer) forwardHTTP(w http.ResponseWriter, r *http.Request, schem
 		if fw.writeErr == nil && !errors.Is(copyErr, context.Canceled) {
 			log.Warn().Err(copyErr).Str("host", hostname).Msg("agent-vault: upstream stream failed part way")
 		}
+		// The request line above already logged the upstream's status, which the agent never got.
+		if fw.writeErr != nil {
+			gone := log.Info().Str("host", hostname).Str("path", reqPath).Int("status", status)
+			if t.viaSocks5 {
+				gone = gone.Str("door", "socks5")
+			}
+			gone.Msg("agent-vault: the client left before the reply reached it")
+		}
 		panic(http.ErrAbortHandler)
 	}
 }
 
 // The one place the block decision lives, so the test that covers exceptions runs what forward runs.
-func (ps *proxyServer) blocksOffBundle(matched *resolvedService, hostname, port string) bool {
-	return matched == nil && ps.currentConfig().TrafficPolicy == TrafficPolicyBundleHosts && !ps.isAllowedHost(hostname, port)
+func (cfg ProxyConfig) blocksOffBundle(matched *resolvedService, hostname, port string) bool {
+	return matched == nil && cfg.TrafficPolicy == TrafficPolicyBundleHosts && !cfg.isAllowedHost(hostname, port)
 }
 
 type forwardOutcome struct {
 	brokered    bool
 	substituted []string
 	sessionLog  *sessionLogGrant
+	mcp         *mcpDetail
+	hook        *hookOutcome
 }
 
-func (ps *proxyServer) forward(req *http.Request, scheme, hostname, port, sessionToken string) (*http.Response, *resolvedService, forwardOutcome, error) {
+func (ps *proxyServer) forward(req *http.Request, t tunnel) (*http.Response, *resolvedService, forwardOutcome, error) {
+	scheme, hostname, port, sessionToken := t.scheme, t.hostname, t.port, t.sessionToken
 	var outcome forwardOutcome
 
-	services, grant, err := ps.cache.lookup(sessionToken)
+	found, err := ps.cache.lookup(sessionToken, nil)
 	if err != nil {
 		return nil, nil, outcome, fmt.Errorf("%w: %w", errSessionResolve, err)
 	}
+	services, grant := found.services, found.sessionLog
 	outcome.sessionLog = grant
 
 	// TRACE and TRACK make the upstream reflect the injected credential back in the response body. Upper
@@ -509,8 +936,21 @@ func (ps *proxyServer) forward(req *http.Request, scheme, hostname, port, sessio
 	}
 
 	matched := bestMatch(services, hostname, port)
+	// One copy for every decision this request makes. A poll can swap the settings at any moment, and a
+	// request judged by two different policies could pass the gate under one and skip the private-address
+	// check under the other.
+	cfg := ps.currentConfig()
+	// Set only when the proxy injected a credential Infisical can refresh, which is what decides whether an
+	// upstream 401 or 403 is handled here or passed to the agent.
+	var sent *credential
+	// A credential that cannot be refreshed, injected into an MCP request: an upstream 401 then means the
+	// stored credential is wrong, which the agent cannot fix by logging in itself.
+	staticMCP := false
+	// Decided from the agent's own Accept, before a custom header or the credential can replace it, so it agrees
+	// with how a hook refusal is delivered.
+	watchHookStream := false
 
-	if ps.blocksOffBundle(matched, hostname, port) {
+	if cfg.blocksOffBundle(matched, hostname, port) {
 		return nil, nil, outcome, fmt.Errorf("no service covers host %q: %w", hostname, errHostBlocked)
 	}
 
@@ -537,8 +977,44 @@ func (ps *proxyServer) forward(req *http.Request, scheme, hostname, port, sessio
 		return nil, matched, outcome, fmt.Errorf(
 			"service %q expects TLS on port 443; refusing to broker plain HTTP: %w", matched.name, errPolicyBlocked)
 	}
+	// Infisical only accepts an https:// URL for an MCP server, so plain HTTP is refused whatever the port: a
+	// server on a custom port would otherwise get its token in cleartext.
+	if matched != nil && scheme == "http" && matched.kind == serviceKindMCP {
+		return nil, matched, outcome, fmt.Errorf(
+			"MCP service %q expects TLS; refusing to broker plain HTTP: %w", matched.name, errPolicyBlocked)
+	}
+	// An OAuth sign-in's token is only ever issued for https, and would otherwise cross a custom port in cleartext.
+	if matched != nil && scheme == "http" && matched.credential.refreshable {
+		return nil, matched, outcome, fmt.Errorf(
+			"service %q signs in with OAuth and expects TLS; refusing to broker plain HTTP: %w", matched.name, errPolicyBlocked)
+	}
 
 	if matched != nil {
+		watchHookStream = watchesHookStream(matched, req)
+		// Before anything is injected, so the names it records can only have come from the agent. Parsed
+		// only for a session log or a tool allowlist; with neither the body is still buffered for an OAuth
+		// credential, so a rejected token's request can be sent again.
+		if matched.kind == serviceKindMCP && matched.allowedTools != nil {
+			var refusal *mcpToolRefusal
+			if outcome.mcp, refusal = checkToolAllowlist(matched, req, grant != nil); refusal != nil {
+				return nil, matched, outcome, ps.sseStreams.deliver(sessionToken, matched.id, req.URL, refusal)
+			}
+		} else if matched.kind == serviceKindMCP {
+			if grant != nil {
+				outcome.mcp = inspectMCPRequest(req)
+			} else if matched.credential.refreshable {
+				bufferMCPRequest(req, maxMCPInspectBody)
+			}
+		} else if matched.credential.refreshable {
+			bufferRequestBody(req, maxMCPInspectBody)
+		}
+
+		if matched.hook != nil {
+			if err := ps.askHook(req, t, matched, found, &outcome); err != nil {
+				return nil, matched, outcome, err
+			}
+		}
+
 		// Substitutions first, so an injected real value can never itself be rewritten. The credential last,
 		// so a custom header naming the credential's own header loses rather than replacing the token.
 		substituted, err := applySubstitutions(req, matched.name, matched.substitutions)
@@ -553,6 +1029,11 @@ func (ps *proxyServer) forward(req *http.Request, scheme, hostname, port, sessio
 		}
 		if injectCredential(req, &matched.credential) {
 			outcome.brokered = true
+			if matched.credential.refreshable {
+				sent = &matched.credential
+			} else if matched.kind == serviceKindMCP {
+				staticMCP = true
+			}
 		}
 
 		// After the brokered headers rather than before them, so a custom header cannot reintroduce an
@@ -573,13 +1054,63 @@ func (ps *proxyServer) forward(req *http.Request, scheme, hostname, port, sessio
 				)
 			}
 		}
+		if matched.kind == serviceKindMCP && (matched.allowedTools != nil || watchHookStream) {
+			// Go then asks for gzip itself and hands back the response decompressed, so a tools/list result
+			// can be filtered, and a legacy SSE stream watched, whatever encodings the agent accepts.
+			req.Header.Del("Accept-Encoding")
+		}
 	}
 
-	resp, err := ps.transport.RoundTrip(req)
+	// Captured before the round trip, which consumes the body.
+	var replay []byte
+	replayable := false
+	if sent != nil {
+		replay, replayable = replayableBody(req)
+	}
+
+	upstream, err := ps.upstreamFor(t, matched)
 	if err != nil {
 		return nil, matched, outcome, err
 	}
+	resp, err := upstream.RoundTrip(req)
+	if err != nil {
+		return nil, matched, outcome, err
+	}
+	// An insufficient_scope challenge too, or the agent's MCP client would start an authorization of its own
+	// whose token the proxy then overwrites with the stored one.
+	_, insufficientScope := insufficientScopeChallenge(resp)
+	if staticMCP && (resp.StatusCode == http.StatusUnauthorized || insufficientScope) {
+		_ = resp.Body.Close()
+		log.Warn().Str("service", matched.name).Str("serviceId", matched.id).
+			Msg("agent-vault: the MCP server rejected the service's credential")
+		return upstreamAuthFailed(req, http.StatusBadGateway, staticCredentialRejectedBody(matched), nil), matched, outcome, nil
+	}
+	if sent != nil {
+		resp, err = ps.handleUpstreamAuth(upstream, req, resp, matched, sessionToken, sent, replay, replayable)
+		if err != nil {
+			return nil, matched, outcome, err
+		}
+	}
+	if matched != nil && matched.kind == serviceKindMCP && (matched.allowedTools != nil || watchHookStream) {
+		if stream := hideUnlistedTools(resp, matched.allowedTools); stream != nil {
+			ps.sseStreams.watch(stream, sessionToken, matched.id, *req.URL)
+		}
+	}
 	return resp, matched, outcome, nil
+}
+
+// upstreamFor picks the transport a request leaves through. A SOCKS5 port is meant to face the internet, so a
+// destination no service names may not be private, whatever the policy: only an admin naming a host in a
+// bundle makes an internal address reachable that way. Exceptions do not count, because a wildcard exception
+// such as *.nip.io lets the client choose the address a name resolves to.
+func (ps *proxyServer) upstreamFor(t tunnel, matched *resolvedService) (http.RoundTripper, error) {
+	if !t.viaSocks5 || ps.socks5AllowPrivate || matched != nil {
+		return ps.transport, nil
+	}
+	if ps.guardedTransport == nil {
+		return nil, errPrivateDestination
+	}
+	return ps.guardedTransport, nil
 }
 
 func containsSurface(surfaces []string, target string) bool {
@@ -591,8 +1122,8 @@ func containsSurface(surfaces []string, target string) bool {
 	return false
 }
 
-func (ps *proxyServer) isAllowedHost(hostname, port string) bool {
-	raw := ps.currentConfig().AllowedHosts
+func (cfg ProxyConfig) isAllowedHost(hostname, port string) bool {
+	raw := cfg.AllowedHosts
 	if raw == "" {
 		return false
 	}
@@ -783,6 +1314,9 @@ func (ps *proxyServer) serveSelfEndpoint(w http.ResponseWriter, r *http.Request)
 		})
 		return true
 
+	case NativeServicesPath:
+		ps.serveNativeServices(w, r)
+		return true
 	}
 
 	http.NotFound(w, r)
@@ -820,13 +1354,21 @@ func (l *oneShotListener) Close() error {
 
 func (l *oneShotListener) Addr() net.Addr { return l.conn.LocalAddr() }
 
+const limitFullWarnEvery = time.Minute
+
+const (
+	halfCloseReplyStartLimit = time.Minute
+	halfCloseReplyLimit      = 10 * time.Minute
+)
+
 type limitListener struct {
 	net.Listener
 	sem       chan struct{}
 	done      chan struct{}
 	closeOnce sync.Once
 	onFull    func()
-	fullOnce  sync.Once
+	// Rate limited rather than once per process, so an operator sees every period the limit is reached.
+	lastFull atomic.Int64
 }
 
 func newLimitListener(l net.Listener, n int, onFull func()) net.Listener {
@@ -843,7 +1385,10 @@ func (l *limitListener) acquire() bool {
 		return false
 	default:
 	}
-	l.fullOnce.Do(l.onFull)
+	now := time.Now().UnixNano()
+	if last := l.lastFull.Load(); now-last >= int64(limitFullWarnEvery) && l.lastFull.CompareAndSwap(last, now) {
+		l.onFull()
+	}
 	select {
 	case l.sem <- struct{}{}:
 		return true

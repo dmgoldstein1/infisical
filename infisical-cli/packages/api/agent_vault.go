@@ -3,6 +3,9 @@ package api
 import (
 	"context"
 	"fmt"
+	"net/url"
+	"strconv"
+	"time"
 
 	"github.com/Infisical/infisical-merge/packages/config"
 	"github.com/go-resty/resty/v2"
@@ -79,6 +82,11 @@ type AgentVaultCredential struct {
 	Value        string `json:"value,omitempty"`
 	Username     string `json:"username,omitempty"`
 	Password     string `json:"password,omitempty"`
+	// An ssh-key credential's key and optional certificate.
+	PrivateKey  string `json:"privateKey,omitempty"`
+	Certificate string `json:"certificate,omitempty"`
+	// "oauth" marks a token Infisical can refresh; every other credential leaves it empty.
+	Source string `json:"source,omitempty"`
 }
 
 type AgentVaultCustomHeader struct {
@@ -94,16 +102,86 @@ type AgentVaultSubstitution struct {
 }
 
 type AgentVaultService struct {
-	ID               string `json:"id"`
-	Name             string `json:"name"`
+	ID   string `json:"id"`
+	Name string `json:"name"`
+	Type string `json:"type"`
+	// Empty for a service sent inline with the session, which belongs to no bundle.
 	AccessBundleName string `json:"accessBundleName"`
-	HostPattern      string `json:"hostPattern"`
+	// Null for a database or SSH service, which decodes to empty and so matches no HTTP traffic.
+	HostPattern string `json:"hostPattern"`
+	// Where a database or SSH service's server is. Nil for HTTP and MCP services, and from older servers.
+	Native *AgentVaultNativeTarget `json:"native"`
 	// A nil slice means unrestricted, which is what JSON null decodes to.
 	AllowedMethods      []string                 `json:"allowedMethods"`
 	AllowedPathPrefixes []string                 `json:"allowedPathPrefixes"`
+	AllowedTools        []string                 `json:"allowedTools"`
 	Credential          AgentVaultCredential     `json:"credential"`
 	CustomHeaders       []AgentVaultCustomHeader `json:"customHeaders"`
 	Substitutions       []AgentVaultSubstitution `json:"substitutions"`
+	// The service takes part of its credential from each member and the session's owner has not set their personal values.
+	// Older servers never send it, which decodes to false.
+	PersonalValuesMissing bool `json:"personalValuesMissing"`
+	// Any credential field is left to each member. Older servers never send it, which decodes to false.
+	MemberProvided bool `json:"memberProvided"`
+	// The OAuth variable an inline service signed in with was deleted. Older servers never send it, which decodes to
+	// false, and send personalValuesMissing with it so a proxy that does not know it still refuses the service.
+	CredentialRemoved bool `json:"credentialRemoved"`
+	// The OAuth variable the service signs in with isn't connected. Older servers never send it, which decodes to false,
+	// and send personalValuesMissing with it so a proxy that does not know it still refuses the service.
+	CredentialNotConnected bool `json:"credentialNotConnected"`
+	// Nil for a service sent inline with the session.
+	AccessBundleID *string `json:"accessBundleId"`
+	// Asked before each request its narrowing picks, or each database or SSH connection. Nil when the service has none.
+	Hook *AgentVaultServiceHook `json:"hook"`
+}
+
+// Older servers send only the URL and secret, which asks the hook about every request of the service.
+type AgentVaultServiceHook struct {
+	ID string `json:"id"`
+	// Nil from servers that don't send it.
+	Name   *string `json:"name"`
+	URL    string  `json:"url"`
+	Secret string  `json:"secret"`
+	// HTTP methods and path prefixes, or MCP tools. None means every request of the service.
+	Methods []string `json:"methods"`
+	Paths   []string `json:"paths"`
+	Tools   []string `json:"tools"`
+}
+
+// Who the session is for, as Infisical recorded it when the session was created. Older servers never send it.
+type AgentVaultResolvedSession struct {
+	Label      *string                      `json:"label"`
+	Actor      AgentVaultSessionActor       `json:"actor"`
+	OnBehalfOf *AgentVaultSessionOnBehalfOf `json:"onBehalfOf"`
+	Metadata   map[string]string            `json:"metadata"`
+}
+
+type AgentVaultSessionActor struct {
+	Type  string  `json:"type"`
+	ID    string  `json:"id"`
+	Name  string  `json:"name"`
+	Email *string `json:"email"`
+}
+
+type AgentVaultSessionOnBehalfOf struct {
+	ID    string  `json:"id"`
+	Name  string  `json:"name"`
+	Email *string `json:"email"`
+}
+
+// Pointers, so a field the server leaves out is told apart from false and keeps the safe default.
+type AgentVaultNativeTLS struct {
+	Enabled *bool  `json:"enabled"`
+	Verify  *bool  `json:"verify"`
+	CA      string `json:"ca"`
+}
+
+type AgentVaultNativeTarget struct {
+	Host     string `json:"host"`
+	Port     int    `json:"port"`
+	Database string `json:"database"`
+	// Nil for SSH.
+	TLS *AgentVaultNativeTLS `json:"tls"`
 }
 
 type AgentVaultSessionLogGrant struct {
@@ -116,10 +194,11 @@ type ResolveAgentVaultSessionRequest struct {
 }
 
 type ResolveAgentVaultSessionResponse struct {
-	SessionID   string                    `json:"sessionId"`
-	ExpiresAt   string                    `json:"expiresAt"`
-	Services    []AgentVaultService       `json:"services"`
-	SessionLogs AgentVaultSessionLogGrant `json:"sessionLogs"`
+	SessionID   string                     `json:"sessionId"`
+	ExpiresAt   string                     `json:"expiresAt"`
+	Services    []AgentVaultService        `json:"services"`
+	SessionLogs AgentVaultSessionLogGrant  `json:"sessionLogs"`
+	Session     *AgentVaultResolvedSession `json:"session"`
 }
 
 func CallResolveAgentVaultSession(httpClient *resty.Client, sessionToken string, request ResolveAgentVaultSessionRequest) (ResolveAgentVaultSessionResponse, error) {
@@ -141,12 +220,102 @@ func CallResolveAgentVaultSession(httpClient *resty.Client, sessionToken string,
 	return res, nil
 }
 
+// The proxy calls these while an agent's request waits, and keeps a failed refresh's error for a few seconds,
+// so neither may buffer an unbounded body. A credential answer is a few kilobytes at most.
+const agentVaultCredentialResponseLimit = 64 << 10
+
+type RefreshAgentVaultServiceCredentialRequest struct {
+	HostPattern       string `json:"hostPattern"`
+	RejectedTokenHash string `json:"rejectedTokenHash"`
+}
+
+type RefreshAgentVaultServiceCredentialResponse struct {
+	Credential AgentVaultCredential `json:"credential"`
+	Status     string               `json:"status"`
+}
+
+func CallRefreshAgentVaultServiceCredential(httpClient *resty.Client, sessionToken, serviceID string, request RefreshAgentVaultServiceCredentialRequest) (RefreshAgentVaultServiceCredentialResponse, error) {
+	var res RefreshAgentVaultServiceCredentialResponse
+	response, err := httpClient.
+		R().
+		SetResponseBodyLimit(agentVaultCredentialResponseLimit).
+		SetResult(&res).
+		SetHeader("User-Agent", USER_AGENT).
+		SetHeader(AgentVaultSessionHeader, sessionToken).
+		SetBody(request).
+		Post(fmt.Sprintf("%v/v1/agent-vault/proxy/services/%s/credential-refresh", config.INFISICAL_URL, url.PathEscape(serviceID)))
+
+	if err != nil {
+		return RefreshAgentVaultServiceCredentialResponse{}, NewGenericRequestError("CallRefreshAgentVaultServiceCredential", err)
+	}
+	if response.IsError() {
+		return RefreshAgentVaultServiceCredentialResponse{}, NewAPIErrorWithResponse("CallRefreshAgentVaultServiceCredential", response, nil)
+	}
+	return res, nil
+}
+
+type ReportAgentVaultServiceMissingScopesRequest struct {
+	HostPattern       string   `json:"hostPattern"`
+	RejectedTokenHash string   `json:"rejectedTokenHash"`
+	RequiredScopes    []string `json:"requiredScopes"`
+}
+
+func CallReportAgentVaultServiceMissingScopes(httpClient *resty.Client, sessionToken, serviceID string, request ReportAgentVaultServiceMissingScopesRequest) error {
+	response, err := httpClient.
+		R().
+		SetResponseBodyLimit(agentVaultCredentialResponseLimit).
+		SetHeader("User-Agent", USER_AGENT).
+		SetHeader(AgentVaultSessionHeader, sessionToken).
+		SetBody(request).
+		Post(fmt.Sprintf("%v/v1/agent-vault/proxy/services/%s/missing-scopes", config.INFISICAL_URL, url.PathEscape(serviceID)))
+
+	if err != nil {
+		return NewGenericRequestError("CallReportAgentVaultServiceMissingScopes", err)
+	}
+	if response.IsError() {
+		return NewAPIErrorWithResponse("CallReportAgentVaultServiceMissingScopes", response, nil)
+	}
+	return nil
+}
+
+type ReportAgentVaultUsageRequest struct {
+	ReportID string    `json:"reportId"`
+	EndedAt  time.Time `json:"endedAt"`
+	Brokered int64     `json:"brokered"`
+}
+
+func CallReportAgentVaultUsage(ctx context.Context, httpClient *resty.Client, request ReportAgentVaultUsageRequest) error {
+	response, err := httpClient.
+		R().
+		SetContext(ctx).
+		SetHeader("User-Agent", USER_AGENT).
+		SetBody(request).
+		Post(fmt.Sprintf("%v/v1/agent-vault/proxy/usage", config.INFISICAL_URL))
+
+	if err != nil {
+		return NewGenericRequestError("CallReportAgentVaultUsage", err)
+	}
+	if response.IsError() {
+		return NewAPIErrorWithResponse("CallReportAgentVaultUsage", response, nil)
+	}
+	return nil
+}
+
 type CreateAgentVaultSessionLogChunkRequest struct {
 	ChunkID          string `json:"chunkId"`
 	EndedAt          string `json:"endedAt"`
 	CiphertextBytes  int    `json:"ciphertextBytes"`
 	CiphertextSha256 string `json:"ciphertextSha256"`
 	RecordCount      int    `json:"recordCount"`
+	// Nil sends nothing, so Infisical can tell a chunk that was never counted from one with no requests of a kind.
+	DecisionCounts *AgentVaultSessionLogDecisionCounts `json:"decisionCounts,omitempty"`
+}
+
+type AgentVaultSessionLogDecisionCounts struct {
+	Brokered    int `json:"brokered"`
+	Passthrough int `json:"passthrough"`
+	Blocked     int `json:"blocked"`
+	Error       int `json:"error"`
 }
 
 type CreateAgentVaultSessionLogChunkResponse struct {
@@ -174,14 +343,27 @@ func CallCreateAgentVaultSessionLogChunk(ctx context.Context, httpClient *resty.
 }
 
 type CreateAgentVaultSessionRequest struct {
-	AccessBundles []string `json:"accessBundles"`
-	TTL           string   `json:"ttl"`
+	ProjectID    string            `json:"projectId,omitempty"`
+	AccessBundle string            `json:"accessBundle"`
+	TTL          string            `json:"ttl"`
+	Label        string            `json:"label,omitempty"`
+	Metadata     map[string]string `json:"metadata,omitempty"`
+}
+
+type AgentVaultSessionAccessBundle struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
 }
 
 type AgentVaultSession struct {
-	ID        string  `json:"id"`
-	Token     string  `json:"token"`
-	ExpiresAt *string `json:"expiresAt"`
+	ID           string                         `json:"id"`
+	Token        string                         `json:"token"`
+	ProjectID    string                         `json:"projectId"`
+	Label        *string                        `json:"label"`
+	Metadata     map[string]string              `json:"metadata"`
+	AccessBundle *AgentVaultSessionAccessBundle `json:"accessBundle"`
+	ExpiresAt    *string                        `json:"expiresAt"`
+	CreatedAt    string                         `json:"createdAt"`
 }
 
 type CreateAgentVaultSessionResponse struct {
@@ -206,9 +388,10 @@ func CallCreateAgentVaultSession(httpClient *resty.Client, request CreateAgentVa
 	return res, nil
 }
 
-func CallRevokeAgentVaultSession(httpClient *resty.Client, sessionID string) error {
+func CallRevokeAgentVaultSession(ctx context.Context, httpClient *resty.Client, sessionID string) error {
 	response, err := httpClient.
 		R().
+		SetContext(ctx).
 		SetHeader("User-Agent", USER_AGENT).
 		Post(fmt.Sprintf("%v/v1/agent-vault/sessions/%s/revoke", config.INFISICAL_URL, sessionID))
 
@@ -219,4 +402,394 @@ func CallRevokeAgentVaultSession(httpClient *resty.Client, sessionID string) err
 		return NewAPIErrorWithResponse("CallRevokeAgentVaultSession", response, nil)
 	}
 	return nil
+}
+
+type RevokeAgentVaultSessionByTokenResponse struct {
+	Session struct {
+		ID        string  `json:"id"`
+		RevokedAt *string `json:"revokedAt"`
+	} `json:"session"`
+}
+
+// The session token is the only credential: whoever holds it may end the session it names.
+func CallRevokeAgentVaultSessionByToken(ctx context.Context, httpClient *resty.Client, sessionToken string) (RevokeAgentVaultSessionByTokenResponse, error) {
+	var res RevokeAgentVaultSessionByTokenResponse
+	response, err := httpClient.
+		R().
+		SetContext(ctx).
+		SetResult(&res).
+		SetHeader("User-Agent", USER_AGENT).
+		SetAuthToken(sessionToken).
+		Post(fmt.Sprintf("%v/v1/agent-vault/session/revoke", config.INFISICAL_URL))
+
+	if err != nil {
+		return RevokeAgentVaultSessionByTokenResponse{}, NewGenericRequestError("CallRevokeAgentVaultSessionByToken", err)
+	}
+	if response.IsError() {
+		return RevokeAgentVaultSessionByTokenResponse{}, NewAPIErrorWithResponse("CallRevokeAgentVaultSessionByToken", response, nil)
+	}
+	return res, nil
+}
+
+type AgentVaultSkillFile struct {
+	Path          string `json:"path"`
+	Mode          string `json:"mode"`
+	ContentBase64 string `json:"contentBase64"`
+}
+
+type AgentVaultSessionSkill struct {
+	ID      string                `json:"id"`
+	Name    string                `json:"name"`
+	Version int                   `json:"version"`
+	Sha256  string                `json:"sha256"`
+	Files   []AgentVaultSkillFile `json:"files"`
+}
+
+type ListAgentVaultSessionSkillsResponse struct {
+	Skills []AgentVaultSessionSkill `json:"skills"`
+}
+
+// Infisical caps one skill at 1 MB, and a session at 25 skills through its access bundle and 20 picked from the
+// project, while the skills sent with it share one 2 MB request.
+const agentVaultSessionSkillsResponseLimit = 64 << 20
+
+// CallListAgentVaultSessionSkills asks Infisical for the session's skills. includeBuiltin=false leaves out the built-in
+// infisical-agent-vault skill; an Infisical that predates it ignores the parameter and never sends that skill.
+func CallListAgentVaultSessionSkills(ctx context.Context, httpClient *resty.Client, sessionToken string, includeBuiltin bool) (ListAgentVaultSessionSkillsResponse, error) {
+	return listAgentVaultSessionSkills(ctx, httpClient, fmt.Sprintf("%v/v1/agent-vault/session/skills", config.INFISICAL_URL),
+		sessionToken, includeBuiltin, "CallListAgentVaultSessionSkills", nil)
+}
+
+// CallListAgentVaultSessionSkillsThroughProxy asks for the session's skills at proxyAPIURL, the API of the proxy's own
+// Infisical, through the proxy, which answers for the session itself. A host that can reach only the proxy still gets
+// them. httpClient has to send its requests through the proxy, as the session, and trust the proxy's certificate
+// authority. The request carries no session token: the proxy adds the session's own, and until check has confirmed
+// that proxyAPIURL is the proxy's Infisical, the request could reach another host. check sees the answer before
+// anything is read from it, and an error from it is returned as is.
+func CallListAgentVaultSessionSkillsThroughProxy(ctx context.Context, httpClient *resty.Client, proxyAPIURL string, includeBuiltin bool, check func(*resty.Response) error) (ListAgentVaultSessionSkillsResponse, error) {
+	return listAgentVaultSessionSkills(ctx, httpClient, proxyAPIURL+"/v1/agent-vault/session/skills",
+		"", includeBuiltin, "CallListAgentVaultSessionSkillsThroughProxy", check)
+}
+
+func listAgentVaultSessionSkills(ctx context.Context, httpClient *resty.Client, url, sessionToken string, includeBuiltin bool, operation string, check func(*resty.Response) error) (ListAgentVaultSessionSkillsResponse, error) {
+	var res ListAgentVaultSessionSkillsResponse
+	request := httpClient.
+		R().
+		SetContext(ctx).
+		SetResponseBodyLimit(agentVaultSessionSkillsResponseLimit).
+		SetResult(&res).
+		SetHeader("User-Agent", USER_AGENT).
+		SetQueryParam("includeBuiltin", strconv.FormatBool(includeBuiltin))
+	if sessionToken != "" {
+		request.SetAuthToken(sessionToken)
+	}
+	response, err := request.Get(url)
+
+	if err != nil {
+		return ListAgentVaultSessionSkillsResponse{}, NewGenericRequestError(operation, err)
+	}
+	if check != nil {
+		if err := check(response); err != nil {
+			return ListAgentVaultSessionSkillsResponse{}, err
+		}
+	}
+	if response.IsError() {
+		return ListAgentVaultSessionSkillsResponse{}, NewAPIErrorWithResponse(operation, response, nil)
+	}
+	return res, nil
+}
+
+// AgentVaultSessionService is one service in a session's services list, as far as agent-vault run reads it.
+type AgentVaultSessionService struct {
+	Name string `json:"name"`
+	// "http" or "mcp".
+	Type string `json:"type"`
+	// An MCP service's server URL.
+	URL string `json:"url"`
+	// An MCP service's transport: "streamable-http" or "sse".
+	Transport string `json:"transport"`
+	// "ready", or "needs-personal-values" until the user sets them; the proxy refuses requests to such a service.
+	Status     string                             `json:"status"`
+	Credential AgentVaultSessionServiceCredential `json:"credential"`
+	// What to do with the service, or for one not ready, what has to happen first. Empty from older servers.
+	HowToUse string `json:"howToUse"`
+}
+
+type AgentVaultSessionServiceCredential struct {
+	// "bearer", "oauth", "basic" or "none".
+	Type string `json:"type"`
+	// The header the proxy sets.
+	Header       string `json:"header"`
+	AddedByProxy bool   `json:"addedByProxy"`
+}
+
+type ListAgentVaultSessionServicesResponse struct {
+	Services []AgentVaultSessionService `json:"services"`
+}
+
+// A services list is small; the limit only keeps a broken answer from filling memory.
+const agentVaultSessionServicesResponseLimit = 4 << 20
+
+// CallListAgentVaultSessionServices asks Infisical for the session's services.
+func CallListAgentVaultSessionServices(ctx context.Context, httpClient *resty.Client, sessionToken string) (ListAgentVaultSessionServicesResponse, error) {
+	return listAgentVaultSessionServices(ctx, httpClient, fmt.Sprintf("%v/v1/agent-vault/session/services", config.INFISICAL_URL),
+		sessionToken, "CallListAgentVaultSessionServices", nil)
+}
+
+// CallListAgentVaultSessionServicesThroughProxy asks for the session's services at proxyAPIURL, the API of the proxy's
+// own Infisical, through the proxy, which answers for the session itself. httpClient has to send its requests through the
+// proxy, as the session, and trust the proxy's certificate authority. Like the skills, the request carries no session
+// token. check sees the answer before anything is read from it, and an error from it is returned as is.
+func CallListAgentVaultSessionServicesThroughProxy(ctx context.Context, httpClient *resty.Client, proxyAPIURL string, check func(*resty.Response) error) (ListAgentVaultSessionServicesResponse, error) {
+	return listAgentVaultSessionServices(ctx, httpClient, proxyAPIURL+"/v1/agent-vault/session/services",
+		"", "CallListAgentVaultSessionServicesThroughProxy", check)
+}
+
+func listAgentVaultSessionServices(ctx context.Context, httpClient *resty.Client, url, sessionToken, operation string, check func(*resty.Response) error) (ListAgentVaultSessionServicesResponse, error) {
+	var res ListAgentVaultSessionServicesResponse
+	request := httpClient.
+		R().
+		SetContext(ctx).
+		SetResponseBodyLimit(agentVaultSessionServicesResponseLimit).
+		SetResult(&res).
+		SetHeader("User-Agent", USER_AGENT)
+	if sessionToken != "" {
+		request.SetAuthToken(sessionToken)
+	}
+	response, err := request.Get(url)
+
+	if err != nil {
+		return ListAgentVaultSessionServicesResponse{}, NewGenericRequestError(operation, err)
+	}
+	if check != nil {
+		if err := check(response); err != nil {
+			return ListAgentVaultSessionServicesResponse{}, err
+		}
+	}
+	if response.IsError() {
+		return ListAgentVaultSessionServicesResponse{}, NewAPIErrorWithResponse(operation, response, nil)
+	}
+	return res, nil
+}
+
+type GetAgentVaultSessionProxyCaFingerprintsResponse struct {
+	Fingerprints []string `json:"fingerprints"`
+}
+
+// The session token is the only credential. The caller decides which domain and transport it goes over.
+func CallGetAgentVaultSessionProxyCaFingerprints(ctx context.Context, httpClient *resty.Client, sessionToken string) (GetAgentVaultSessionProxyCaFingerprintsResponse, error) {
+	var res GetAgentVaultSessionProxyCaFingerprintsResponse
+	response, err := httpClient.
+		R().
+		SetContext(ctx).
+		SetResult(&res).
+		SetHeader("User-Agent", USER_AGENT).
+		SetAuthToken(sessionToken).
+		Get(fmt.Sprintf("%v/v1/agent-vault/session/proxy-ca-fingerprints", config.INFISICAL_URL))
+
+	if err != nil {
+		return GetAgentVaultSessionProxyCaFingerprintsResponse{}, NewGenericRequestError("CallGetAgentVaultSessionProxyCaFingerprints", err)
+	}
+	if response.IsError() {
+		return GetAgentVaultSessionProxyCaFingerprintsResponse{}, NewAPIErrorWithResponse("CallGetAgentVaultSessionProxyCaFingerprints", response, nil)
+	}
+	return res, nil
+}
+
+type AgentVaultSkill struct {
+	ID            string                        `json:"id"`
+	Name          string                        `json:"name"`
+	Description   string                        `json:"description"`
+	LatestVersion int                           `json:"latestVersion"`
+	CreatedAt     string                        `json:"createdAt"`
+	UpdatedAt     string                        `json:"updatedAt"`
+	AccessBundles []AgentVaultSkillAccessBundle `json:"accessBundles"`
+}
+
+type AgentVaultSkillAccessBundle struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+}
+
+type AgentVaultSkillVersion struct {
+	ID        string `json:"id"`
+	Version   int    `json:"version"`
+	Sha256    string `json:"sha256"`
+	SizeBytes int    `json:"sizeBytes"`
+	FileCount int    `json:"fileCount"`
+	CreatedAt string `json:"createdAt"`
+}
+
+type ListAgentVaultSkillsResponse struct {
+	Skills     []AgentVaultSkill `json:"skills"`
+	TotalCount int               `json:"totalCount"`
+}
+
+func CallListAgentVaultSkillsByName(httpClient *resty.Client, projectID, name string) (ListAgentVaultSkillsResponse, error) {
+	var res ListAgentVaultSkillsResponse
+	response, err := httpClient.
+		R().
+		SetResult(&res).
+		SetHeader("User-Agent", USER_AGENT).
+		SetQueryParam("projectId", projectID).
+		SetQueryParam("name", name).
+		Get(fmt.Sprintf("%v/v1/agent-vault/skills", config.INFISICAL_URL))
+
+	if err != nil {
+		return ListAgentVaultSkillsResponse{}, NewGenericRequestError("CallListAgentVaultSkillsByName", err)
+	}
+	if response.IsError() {
+		return ListAgentVaultSkillsResponse{}, NewAPIErrorWithResponse("CallListAgentVaultSkillsByName", response, nil)
+	}
+	return res, nil
+}
+
+func CallListAgentVaultSkills(httpClient *resty.Client, projectID string, limit, offset int) (ListAgentVaultSkillsResponse, error) {
+	var res ListAgentVaultSkillsResponse
+	response, err := httpClient.
+		R().
+		SetResult(&res).
+		SetHeader("User-Agent", USER_AGENT).
+		SetQueryParam("projectId", projectID).
+		SetQueryParam("limit", strconv.Itoa(limit)).
+		SetQueryParam("offset", strconv.Itoa(offset)).
+		Get(fmt.Sprintf("%v/v1/agent-vault/skills", config.INFISICAL_URL))
+
+	if err != nil {
+		return ListAgentVaultSkillsResponse{}, NewGenericRequestError("CallListAgentVaultSkills", err)
+	}
+	if response.IsError() {
+		return ListAgentVaultSkillsResponse{}, NewAPIErrorWithResponse("CallListAgentVaultSkills", response, nil)
+	}
+	return res, nil
+}
+
+type AgentVaultSkillWithFiles struct {
+	AgentVaultSkill
+	Files []AgentVaultSkillFile `json:"files"`
+}
+
+type GetAgentVaultSkillResponse struct {
+	Skill AgentVaultSkillWithFiles `json:"skill"`
+}
+
+func CallGetAgentVaultSkill(httpClient *resty.Client, skillID string) (GetAgentVaultSkillResponse, error) {
+	var res GetAgentVaultSkillResponse
+	response, err := httpClient.
+		R().
+		SetResult(&res).
+		SetHeader("User-Agent", USER_AGENT).
+		Get(fmt.Sprintf("%v/v1/agent-vault/skills/%s", config.INFISICAL_URL, url.PathEscape(skillID)))
+
+	if err != nil {
+		return GetAgentVaultSkillResponse{}, NewGenericRequestError("CallGetAgentVaultSkill", err)
+	}
+	if response.IsError() {
+		return GetAgentVaultSkillResponse{}, NewAPIErrorWithResponse("CallGetAgentVaultSkill", response, nil)
+	}
+	return res, nil
+}
+
+type AgentVaultSkillVersionWithFiles struct {
+	AgentVaultSkillVersion
+	Files []AgentVaultSkillFile `json:"files"`
+}
+
+type GetAgentVaultSkillVersionResponse struct {
+	Version AgentVaultSkillVersionWithFiles `json:"version"`
+}
+
+func CallGetAgentVaultSkillVersion(httpClient *resty.Client, skillID string, version int) (GetAgentVaultSkillVersionResponse, error) {
+	var res GetAgentVaultSkillVersionResponse
+	response, err := httpClient.
+		R().
+		SetResult(&res).
+		SetHeader("User-Agent", USER_AGENT).
+		Get(fmt.Sprintf("%v/v1/agent-vault/skills/%s/versions/%d", config.INFISICAL_URL, url.PathEscape(skillID), version))
+
+	if err != nil {
+		return GetAgentVaultSkillVersionResponse{}, NewGenericRequestError("CallGetAgentVaultSkillVersion", err)
+	}
+	if response.IsError() {
+		return GetAgentVaultSkillVersionResponse{}, NewAPIErrorWithResponse("CallGetAgentVaultSkillVersion", response, nil)
+	}
+	return res, nil
+}
+
+type DeleteAgentVaultSkillResponse struct {
+	Skill AgentVaultSkill `json:"skill"`
+}
+
+func CallDeleteAgentVaultSkill(httpClient *resty.Client, skillID string) (DeleteAgentVaultSkillResponse, error) {
+	var res DeleteAgentVaultSkillResponse
+	response, err := httpClient.
+		R().
+		SetResult(&res).
+		SetHeader("User-Agent", USER_AGENT).
+		Delete(fmt.Sprintf("%v/v1/agent-vault/skills/%s", config.INFISICAL_URL, url.PathEscape(skillID)))
+
+	if err != nil {
+		return DeleteAgentVaultSkillResponse{}, NewGenericRequestError("CallDeleteAgentVaultSkill", err)
+	}
+	if response.IsError() {
+		return DeleteAgentVaultSkillResponse{}, NewAPIErrorWithResponse("CallDeleteAgentVaultSkill", response, nil)
+	}
+	return res, nil
+}
+
+type AgentVaultSkillFilesRequest struct {
+	Files []AgentVaultSkillFile `json:"files"`
+}
+
+// Separate from AgentVaultSkillFilesRequest because a publish names its skill by ID and the server takes the
+// project from that skill.
+type CreateAgentVaultSkillRequest struct {
+	ProjectID string                `json:"projectId"`
+	Files     []AgentVaultSkillFile `json:"files"`
+}
+
+type CreateAgentVaultSkillResponse struct {
+	Skill   AgentVaultSkill        `json:"skill"`
+	Version AgentVaultSkillVersion `json:"version"`
+}
+
+func CallCreateAgentVaultSkill(httpClient *resty.Client, request CreateAgentVaultSkillRequest) (CreateAgentVaultSkillResponse, error) {
+	var res CreateAgentVaultSkillResponse
+	response, err := httpClient.
+		R().
+		SetResult(&res).
+		SetHeader("User-Agent", USER_AGENT).
+		SetBody(request).
+		Post(fmt.Sprintf("%v/v1/agent-vault/skills", config.INFISICAL_URL))
+
+	if err != nil {
+		return CreateAgentVaultSkillResponse{}, NewGenericRequestError("CallCreateAgentVaultSkill", err)
+	}
+	if response.IsError() {
+		return CreateAgentVaultSkillResponse{}, NewAPIErrorWithResponse("CallCreateAgentVaultSkill", response, nil)
+	}
+	return res, nil
+}
+
+type UpdateAgentVaultSkillResponse struct {
+	Version   AgentVaultSkillVersion `json:"version"`
+	Unchanged bool                   `json:"unchanged"`
+}
+
+func CallUpdateAgentVaultSkill(httpClient *resty.Client, skillID string, request AgentVaultSkillFilesRequest) (UpdateAgentVaultSkillResponse, error) {
+	var res UpdateAgentVaultSkillResponse
+	response, err := httpClient.
+		R().
+		SetResult(&res).
+		SetHeader("User-Agent", USER_AGENT).
+		SetBody(request).
+		Patch(fmt.Sprintf("%v/v1/agent-vault/skills/%s", config.INFISICAL_URL, url.PathEscape(skillID)))
+
+	if err != nil {
+		return UpdateAgentVaultSkillResponse{}, NewGenericRequestError("CallUpdateAgentVaultSkill", err)
+	}
+	if response.IsError() {
+		return UpdateAgentVaultSkillResponse{}, NewAPIErrorWithResponse("CallUpdateAgentVaultSkill", response, nil)
+	}
+	return res, nil
 }

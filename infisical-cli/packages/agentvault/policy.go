@@ -15,7 +15,36 @@ var errPolicyBlocked = errors.New("blocked by service policy")
 // own status rather than landing in either of theirs.
 var errBodyUnreadable = errors.New("could not read the request body")
 
+// Shared by HTTP requests and database or SSH connections, so the agent's owner reads the same fix either way.
+func errPersonalValuesMissing(svc *resolvedService) error {
+	// A database or SSH login has no sign-in to set up, only a username or a password.
+	what := "credential or sign-in"
+	if svc.native != nil {
+		what = "username or password"
+	}
+	return fmt.Errorf("service %q needs your own %s, which isn't set up yet: %w. Set it up under Services in Infisical Agent Vault, or for a machine identity, start the session on behalf of a user who has set it up. It can take a few minutes to apply.", svc.name, what, errPolicyBlocked)
+}
+
+func errCredentialRemoved(svc *resolvedService) error {
+	return fmt.Errorf("service %q: %w. This service's sign-in was removed in Infisical Agent Vault.", svc.name, errPolicyBlocked)
+}
+
+func errCredentialNotConnected(svc *resolvedService) error {
+	return fmt.Errorf("service %q: %w. The sign-in used by this service isn't connected in Infisical Agent Vault.", svc.name, errPolicyBlocked)
+}
+
 func checkServicePolicy(svc *resolvedService, req *http.Request) error {
+	// First, so the refusal names what the agent's owner can fix rather than a method or path rule. A removed or
+	// unconnected sign-in comes before missing personal values, which the server also sets on it for older proxies.
+	if svc.credentialRemoved {
+		return errCredentialRemoved(svc)
+	}
+	if svc.credentialNotConnected {
+		return errCredentialNotConnected(svc)
+	}
+	if svc.personalValuesMissing {
+		return errPersonalValuesMissing(svc)
+	}
 	if !svc.allowsMethod(req.Method) {
 		return fmt.Errorf("service %q does not allow %s: %w", svc.name, truncateLogged(req.Method, maxLoggedMethodLen), errPolicyBlocked)
 	}
@@ -35,10 +64,12 @@ func (s *resolvedService) allowsMethod(method string) bool {
 	return s.allowedMethods[strings.ToUpper(method)]
 }
 
-// Rails, Laravel and Symfony all honour these, so a POST carrying one performs the method it names. The
-// wire method is what the allowlist judged, so where there is an allowlist the header has to go.
+// Rails, Laravel and Symfony all honour these, so a POST carrying one performs the method it names.
+var methodOverrideHeaders = []string{"X-HTTP-Method-Override", "X-Method-Override", "X-HTTP-Method"}
+
+// The wire method is what the allowlist judged, so where there is an allowlist the header has to go.
 func stripMethodOverrideHeaders(header http.Header) {
-	for _, name := range []string{"X-HTTP-Method-Override", "X-Method-Override", "X-HTTP-Method"} {
+	for _, name := range methodOverrideHeaders {
 		header.Del(name)
 	}
 }

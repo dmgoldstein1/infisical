@@ -7,7 +7,15 @@ import (
 	"github.com/Infisical/infisical-merge/packages/api"
 )
 
-// Never add headers, bodies or the query string: they can carry the injected credential.
+// Never add headers, bodies or the query string: they can carry the injected credential. One exception is mcp,
+// which holds only JSON-RPC method and tool names from the agent's own body. They are captured before any
+// substitution or credential reaches the request, so nothing injected can be among them. mcpNamePattern bounds
+// their length and characters; it does not tell a name from a secret, so a name the agent made up is logged as
+// written. Tool arguments are parsed past but never kept in the record.
+//
+// The other is native, what a database or SSH connection did: statements, commands, file operations and capped
+// output, as PAM records them. The injected credential never passes through the agent's side of that connection,
+// so it can only appear there if the server itself returns it.
 type sessionLogRecord struct {
 	Ts           string  `json:"ts"`
 	Seq          uint64  `json:"seq"`
@@ -20,8 +28,38 @@ type sessionLogRecord struct {
 	Decision     string  `json:"decision"`
 	Service      *string `json:"service"`
 	AccessBundle *string `json:"accessBundle"`
+	// Null when no service matched, so a reader can tell that apart from an http service.
+	ServiceType *string       `json:"serviceType"`
+	MCP         *mcpDetail    `json:"mcp,omitempty"`
+	Native      *nativeDetail `json:"native,omitempty"`
+	// Set when the service's hook refused the request or failed to answer. Never the payload sent to it.
+	Hook *hookOutcome `json:"hook,omitempty"`
 
 	at time.Time
+	// An estimate of the record's size, so the spool can budget memory as well as rows.
+	size int
+}
+
+// Close enough to the JSON size to budget memory by, without encoding under the recorder's lock.
+func (rec *sessionLogRecord) estimateSize() int {
+	size := 128 + len(rec.Method) + len(rec.Host) + len(rec.Port) + len(rec.Path) + len(rec.Decision)
+	for _, field := range []*string{rec.Service, rec.AccessBundle, rec.ServiceType} {
+		if field != nil {
+			size += len(*field)
+		}
+	}
+	if rec.MCP != nil {
+		for _, call := range rec.MCP.Calls {
+			size += 32 + len(call.Method) + len(call.Tool)
+		}
+	}
+	if n := rec.Native; n != nil {
+		size += len(n.Statement) + len(n.Command) + len(n.Stdin) + len(n.File) + len(n.Result) + len(n.Output) + len(n.Note)
+	}
+	if h := rec.Hook; h != nil {
+		size += 64 + len(h.Decision) + len(h.Reason) + len(h.Cause) + len(h.DeliveryID)
+	}
+	return size
 }
 
 const sessionLogRingInitialSize = 64
@@ -31,6 +69,7 @@ type sessionLogRing struct {
 	capacity int
 	head     int
 	n        int
+	bytes    int
 
 	unreportedDrops uint64
 }
@@ -46,6 +85,7 @@ func (r *sessionLogRing) push(rec sessionLogRecord) (evicted bool) {
 		r.grow()
 	}
 	if r.n == r.capacity {
+		r.bytes += rec.size - r.buf[r.head].size
 		r.buf[r.head] = rec
 		r.head = (r.head + 1) % len(r.buf)
 		r.unreportedDrops++
@@ -53,7 +93,20 @@ func (r *sessionLogRing) push(rec sessionLogRecord) (evicted bool) {
 	}
 	r.buf[(r.head+r.n)%len(r.buf)] = rec
 	r.n++
+	r.bytes += rec.size
 	return false
+}
+
+// Drops the oldest record to make room, counted like an overwrite.
+func (r *sessionLogRing) dropOldest() {
+	if r.n == 0 {
+		return
+	}
+	r.bytes -= r.buf[r.head].size
+	r.buf[r.head] = sessionLogRecord{}
+	r.head = (r.head + 1) % len(r.buf)
+	r.n--
+	r.unreportedDrops++
 }
 
 func (r *sessionLogRing) grow() {
@@ -76,7 +129,11 @@ func (r *sessionLogRing) drain(max int) []sessionLogRecord {
 	}
 	out := make([]sessionLogRecord, max)
 	for i := 0; i < max; i++ {
-		out[i] = r.buf[(r.head+i)%len(r.buf)]
+		slot := (r.head + i) % len(r.buf)
+		out[i] = r.buf[slot]
+		r.bytes -= out[i].size
+		// A drained row no longer counts against the byte budget, so the ring must not keep its strings alive.
+		r.buf[slot] = sessionLogRecord{}
 	}
 	r.head = (r.head + max) % len(r.buf)
 	r.n -= max
@@ -236,14 +293,31 @@ func (s *sessionLogSpool) sealSlice(records []sessionLogRecord, plaintext []byte
 		return nil, err
 	}
 
+	meta := api.CreateAgentVaultSessionLogChunkRequest{
+		ChunkID:          chunkID,
+		EndedAt:          latest.Ts,
+		CiphertextBytes:  len(ciphertext),
+		CiphertextSha256: infisicalCiphertextSha256(ciphertext),
+		RecordCount:      len(records),
+	}
+	counts := &api.AgentVaultSessionLogDecisionCounts{}
+	for _, rec := range records {
+		switch rec.Decision {
+		case decisionBrokered:
+			counts.Brokered++
+		case decisionPassthrough:
+			counts.Passthrough++
+		case decisionBlocked:
+			counts.Blocked++
+		default:
+			// Counted somewhere so the four always add up to RecordCount, which Infisical checks before using them.
+			counts.Error++
+		}
+	}
+	meta.DecisionCounts = counts
+
 	return &sealedChunk{
-		meta: api.CreateAgentVaultSessionLogChunkRequest{
-			ChunkID:          chunkID,
-			EndedAt:          latest.Ts,
-			CiphertextBytes:  len(ciphertext),
-			CiphertextSha256: infisicalCiphertextSha256(ciphertext),
-			RecordCount:      len(records),
-		},
+		meta:       meta,
 		ciphertext: ciphertext,
 		records:    len(records),
 	}, nil

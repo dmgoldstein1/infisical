@@ -85,39 +85,6 @@ func (p *KubernetesProxy) injectAuthHeaders(headers http.Header) error {
 	return nil
 }
 
-// redactedLogHeaders returns a copy of h with credential-bearing header values
-// replaced, so audit logs never persist secrets (e.g. Authorization bearer
-// tokens, impersonation headers) in clear text. The proxied request itself is
-// forwarded unmodified.
-func redactedLogHeaders(h http.Header) http.Header {
-	if len(h) == 0 {
-		return h
-	}
-	out := make(http.Header, len(h))
-	for k, v := range h {
-		switch strings.ToLower(k) {
-		case "authorization", "proxy-authorization", "cookie", "set-cookie",
-			"impersonate-user", "impersonate-group", "impersonate-uid":
-			red := make([]string, len(v))
-			for i := range v {
-				red[i] = "[redacted]"
-			}
-			out[k] = red
-		default:
-			if strings.HasPrefix(strings.ToLower(k), "impersonate-extra-") {
-				red := make([]string, len(v))
-				for i := range v {
-					red[i] = "[redacted]"
-				}
-				out[k] = red
-				continue
-			}
-			out[k] = v
-		}
-	}
-	return out
-}
-
 func buildHttpInternalServerError(message string) string {
 	return fmt.Sprintf("HTTP/1.1 500 Internal Server Error\r\nContent-Type: application/json\r\n\r\n{\"message\": \"gateway: %s\"}", message)
 }
@@ -196,23 +163,15 @@ func (p *KubernetesProxy) HandleConnection(ctx context.Context, clientConn net.C
 			}
 			return err
 		}
-		// Cap what reaches the audit log at 1 MiB like the azure/gcp proxies; the
-		// forwarded request still carries the full body.
-		const maxLogBodySize = 1 << 20
-		loggedReqBody := reqBody
-		if len(loggedReqBody) > maxLogBodySize {
-			loggedReqBody = loggedReqBody[:maxLogBodySize]
-		}
 		err = p.config.SessionLogger.LogHttpEvent(session.HttpEvent{
 			Timestamp: time.Now(),
 			RequestId: requestId.String(),
 			EventType: session.HttpEventRequest,
 			URL:       req.URL.String(),
 			Method:    req.Method,
-			// Defense in depth: EncryptedSessionLogger also redacts, but the
-			// header map handed to the audit log must not carry credentials.
-			Headers: redactedLogHeaders(req.Header),
-			Body:    loggedReqBody,
+			// TODO: filter out sensitive headers?
+			Headers: req.Header,
+			Body:    reqBody,
 		})
 		if err != nil {
 			l.Error().Err(err).Msg("Failed to log HTTP request event")

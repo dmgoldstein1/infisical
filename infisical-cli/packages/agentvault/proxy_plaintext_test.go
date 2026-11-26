@@ -148,3 +148,54 @@ func TestAServiceRestrictionStillHoldsOverPlainHTTP(t *testing.T) {
 		t.Errorf("status = %d, want 403", status)
 	}
 }
+
+// An MCP server on a custom port has that port in its host pattern, so the port-443 guard does not cover it.
+func TestPlainHTTPToAnMCPServiceOnACustomPortIsRefused(t *testing.T) {
+	client, host := newPlaintextFixture(t, func(h string) *resolvedService { return mcpService(h) })
+
+	status, body := do(t, client, http.MethodPost, "http://"+host+"/mcp", `{"method":"tools/list"}`)
+	if status != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403: %s", status, body)
+	}
+	if strings.Contains(body, "real-oauth-token") {
+		t.Fatalf("the token reached the upstream in cleartext: %s", body)
+	}
+}
+
+func TestThePlainDoorAsksTheHookWithoutTheSessionToken(t *testing.T) {
+	fake := newFakeHook(t, answerHook(`{"decision":"deny","message":"no"}`))
+	client, host := newPlaintextFixture(t, func(h string) *resolvedService {
+		svc := policyService(h, nil, nil, nil, nil)
+		svc.hook = fake.hook()
+		return svc
+	})
+
+	status, payload := do(t, client, http.MethodGet, "http://"+host+"/x", "")
+	if status != http.StatusForbidden || decodeProxyError(t, payload).Error != errorCodeHookDenied {
+		t.Fatalf("status %d: %s", status, payload)
+	}
+	hit := fake.only(t)
+	if p := hit.payload(t).Request; p.Scheme != "http" || p.Headers["proxy-authorization"] != nil {
+		t.Fatalf("request = %+v", p)
+	}
+	if bytes.Contains(hit.body, []byte("agv_tok")) {
+		t.Fatalf("the session token reached the hook: %s", hit.body)
+	}
+}
+
+func TestPlainHTTPToAnOAuthServiceIsRefused(t *testing.T) {
+	client, host := newPlaintextFixture(t, func(h string) *resolvedService {
+		svc := policyService(h, nil, nil, nil, nil)
+		svc.kind = serviceKindHTTP
+		svc.credential = credential{kind: credentialBearer, headerPrefix: "Bearer", value: []byte("real-oauth-token"), refreshable: true}
+		return svc
+	})
+
+	status, body := do(t, client, http.MethodGet, "http://"+host+"/files", "")
+	if status != http.StatusForbidden || !strings.Contains(body, "signs in with OAuth and expects TLS") {
+		t.Fatalf("status = %d, want 403 naming the OAuth sign-in: %s", status, body)
+	}
+	if strings.Contains(body, "real-oauth-token") {
+		t.Fatalf("the token reached the upstream in cleartext: %s", body)
+	}
+}

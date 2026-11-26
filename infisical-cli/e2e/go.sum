@@ -264,8 +264,8 @@ github.com/docker/cli-docs-tool v0.10.0/go.mod h1:5EM5zPnT2E7yCLERZmrDA234Vwn09f
 github.com/docker/compose/v2 v2.40.3 h1:XeYkQu1svDtyfZPv5nTwFryQ25ZJMkIlc4pz9HalMPI=
 github.com/docker/compose/v2 v2.40.3/go.mod h1:iNY1tvoHTyN3C3QHCuWAgj3OjR2T6mGkk/qxfbBF/4M=
 github.com/docker/distribution v2.7.1+incompatible/go.mod h1:J2gT2udsDAN96Uj4KfcMRqY0/ypR+oyYUYmja8H+y+w=
-github.com/docker/distribution v2.8.3+incompatible h1:AtKxIZ36LoNK51+Z6RpzLpddBirtxJnzDrHLEKxTAYk=
-github.com/docker/distribution v2.8.3+incompatible/go.mod h1:J2gT2udsDAN96Uj4KfcMRqY0/ypR+oyYUYmja8H+y+w=
+github.com/docker/distribution v2.8.4-0.20260923142519-db037680f2ac+incompatible h1:MZV42QqVJ2UUb50IV3RUfzozdCevOQTxYoI3IrnBTlg=
+github.com/docker/distribution v2.8.4-0.20260923142519-db037680f2ac+incompatible/go.mod h1:J2gT2udsDAN96Uj4KfcMRqY0/ypR+oyYUYmja8H+y+w=
 github.com/docker/docker v28.5.2+incompatible h1:DBX0Y0zAjZbSrm1uzOkdr1onVghKaftjlSWt4AFexzM=
 github.com/docker/docker v28.5.2+incompatible/go.mod h1:eEKB0N0r5NX/I1kEveEz05bcu8tLC/8azJZsviup8Sk=
 github.com/docker/docker-credential-helpers v0.9.8 h1:bIREROb7So6PRlq6KTtdS9MPEjC29OQRkFNlvK2OX8Q=

@@ -416,7 +416,7 @@ func (p *AWSProxy) handleRequest(ctx context.Context, w io.Writer, req *http.Req
 		RequestId: requestID,
 		EventType: session.HttpEventResponse,
 		Status:    resp.Status,
-		Headers:   resp.Header,
+		Headers:   loggedHeaders(resp.Header),
 		Body:      loggedResponseBody.Bytes(),
 	}, l)
 
@@ -558,7 +558,7 @@ func forwardedHeaders(header http.Header, signed bool) http.Header {
 
 // Headers that carry a credential or a key, which the session log would otherwise keep, since it masks only bodies
 var credentialHeaders = []string{
-	"Authorization", "X-Amz-Security-Token", "Proxy-Authorization", "X-Amz-Sso_bearer_token",
+	"Authorization", "X-Amz-Security-Token", "Proxy-Authorization", "Set-Cookie", "X-Amz-Sso_bearer_token",
 	"X-Amz-Server-Side-Encryption-Customer-Key", "X-Amz-Copy-Source-Server-Side-Encryption-Customer-Key",
 }
 

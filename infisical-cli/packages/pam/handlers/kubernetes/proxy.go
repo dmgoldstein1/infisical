@@ -49,7 +49,7 @@ func NewKubernetesProxy(config KubernetesProxyConfig) *KubernetesProxy {
 // is an audit trail of what was proxied, not a vault for the credentials that
 // did it. Mirrors the AWS proxy's loggedHeaders redaction.
 var credentialHeaders = []string{
-	"Authorization", "Proxy-Authorization", "Cookie",
+	"Authorization", "Proxy-Authorization", "Cookie", "Set-Cookie",
 	"X-Amz-Security-Token", "X-Amz-Sso_bearer_token", "X-Api-Key",
 }
 
@@ -282,7 +282,7 @@ func (p *KubernetesProxy) HandleConnection(ctx context.Context, clientConn net.C
 			EventType: session.HttpEventResponse,
 			Status:    resp.Status,
 			// TODO: remove sensitive stuff
-			Headers: resp.Header,
+			Headers: loggedHeaders(resp.Header),
 			// TODO: well... this might be really really big for the case of `kubectl cp` or `kubectl logs`
 			// 		 instead of writing the data into a big chunk mem blob,
 			//		 we should break it down into smaller fixed size chunks and flush as resp event with seq numbers

@@ -64,7 +64,7 @@ func (lw *limitedWriter) Write(p []byte) (int, error) {
 // is an audit trail of what was proxied, not a vault for the credentials that
 // did it. Mirrors the AWS proxy's loggedHeaders redaction.
 var credentialHeaders = []string{
-	"Authorization", "Proxy-Authorization", "Cookie",
+	"Authorization", "Proxy-Authorization", "Cookie", "Set-Cookie",
 	"X-Amz-Security-Token", "X-Amz-Sso_bearer_token", "X-Api-Key",
 }
 
@@ -403,7 +403,7 @@ func (p *AzureProxy) forward(writer io.Writer, req *http.Request, client *http.C
 			RequestId: requestId.String(),
 			EventType: session.HttpEventResponse,
 			Status:    resp.Status,
-			Headers:   resp.Header,
+			Headers:   loggedHeaders(resp.Header),
 			Body:      respBody,
 		}); err != nil {
 			l.Error().Err(err).Msg("Failed to log HTTP response event")

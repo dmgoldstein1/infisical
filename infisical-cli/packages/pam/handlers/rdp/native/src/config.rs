@@ -42,6 +42,8 @@ pub fn connector_config(username: String, password: String, domain: Option<Strin
         }),
         dig_product_id: String::new(),
         client_dir: String::new(),
+        alternate_shell: String::new(),
+        work_dir: String::new(),
         platform: MajorPlatformType::UNSPECIFIED,
         hardware_id: None,
         request_data: None,
@@ -50,6 +52,8 @@ pub fn connector_config(username: String, password: String, domain: Option<Strin
         performance_flags: PerformanceFlags::default(),
         license_cache: None,
         timezone_info: TimezoneInfo::default(),
+        compression_type: None,
+        multitransport_flags: None,
         enable_server_pointer: false,
         pointer_software_rendering: false,
     }

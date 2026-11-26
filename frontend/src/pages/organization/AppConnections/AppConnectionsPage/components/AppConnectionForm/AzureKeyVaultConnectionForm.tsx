@@ -8,7 +8,6 @@ import { z } from "zod";
 import { OrgPermissionCan } from "@app/components/permissions";
 import {
   Button,
-  CopyButton,
   Field,
   FieldDescription,
   FieldError,
@@ -46,7 +45,6 @@ import {
   AzureKeyVaultConnectionMethod,
   TAzureKeyVaultConnection
 } from "@app/hooks/api/appConnections/types/azure-key-vault-connection";
-import { ScopeVariant } from "@app/hooks/useScopeVariant";
 
 import { AzureKeyVaultFormData } from "../../../OauthCallbackPage/OauthCallbackPage.types";
 import { useAppConnectionForm, useAppConnectionFormDirtyState } from "./AppConnectionFormContext";
@@ -55,6 +53,10 @@ import {
   GenericAppConnectionsFields
 } from "./GenericAppConnectionFields";
 import { CredentialRotationForm } from "./shared/CredentialRotationForm";
+import {
+  FederatedCredentialValue,
+  GENERATED_VALUE_BORDER
+} from "./shared/FederatedCredentialValue";
 
 type ClientSecretForm = z.infer<typeof clientSecretSchema>;
 type CertificateForm = z.infer<typeof certificateSchema>;
@@ -112,37 +114,6 @@ const formSchema = z.discriminatedUnion("method", [
   certificateSchema,
   managedIdentitySchema
 ]);
-
-// Marks the value generated for this connection, in the scope's color like its buttons
-const GENERATED_VALUE_BORDER: Record<ScopeVariant, string> = {
-  org: "border-org/25",
-  project: "border-project/25",
-  "sub-org": "border-sub-org/25",
-  av: "border-product-av/30",
-  ss: "border-product-ss/30"
-};
-
-const CopyableValue = ({
-  label,
-  value,
-  className
-}: {
-  label: string;
-  value: string;
-  className?: string;
-}) => (
-  <div className="flex flex-col gap-1.5">
-    <span className="text-xs text-accent">{label}</span>
-    <div
-      className={`flex items-start gap-2 rounded-md border bg-container py-2 pr-2 pl-3 ${className ?? "border-border"}`}
-    >
-      <code className="min-w-0 grow font-mono text-xs leading-5 break-all text-foreground">
-        {value}
-      </code>
-      <CopyButton value={value} ariaLabel={`Copy ${label}`} />
-    </div>
-  </div>
-);
 
 type FormData = z.infer<typeof formSchema>;
 
@@ -764,7 +735,10 @@ export const AzureKeyVaultConnectionForm = ({ appConnection, onSubmit, projectId
                   {federatedCredential && (
                     <>
                       {federatedCredential.issuerUrl ? (
-                        <CopyableValue label="Issuer" value={federatedCredential.issuerUrl} />
+                        <FederatedCredentialValue
+                          label="Issuer"
+                          value={federatedCredential.issuerUrl}
+                        />
                       ) : (
                         <div className="flex flex-col gap-1.5">
                           <span className="text-xs text-accent">Issuer</span>
@@ -774,12 +748,15 @@ export const AzureKeyVaultConnectionForm = ({ appConnection, onSubmit, projectId
                           </p>
                         </div>
                       )}
-                      <CopyableValue
+                      <FederatedCredentialValue
                         label="Subject Identifier"
                         value={federatedCredential.subjectIdentifier}
                         className={GENERATED_VALUE_BORDER[scopeVariant]}
                       />
-                      <CopyableValue label="Audience" value={federatedCredential.audience} />
+                      <FederatedCredentialValue
+                        label="Audience"
+                        value={federatedCredential.audience}
+                      />
                     </>
                   )}
                 </>

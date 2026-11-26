@@ -10,7 +10,7 @@ vi.mock("@app/lib/logger", () => ({
 
 beforeAll(async () => {
   process.env.FIPS_ENABLED = "false";
-  await crypto.initialize({} as never, {} as never, {} as never);
+  await crypto.initialize({} as never);
 });
 
 afterAll(() => {

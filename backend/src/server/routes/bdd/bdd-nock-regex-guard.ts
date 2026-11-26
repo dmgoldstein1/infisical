@@ -8,7 +8,7 @@ export const hasNestedQuantifier = (source: string): boolean => {
   const stack: boolean[] = [];
   let inClass = false;
   let escaped = false;
-  let innerHasQuantifier = false;
+  let innerHasQuantifier: boolean = false;
   for (let i = 0; i < source.length; i++) {
     const ch = source[i];
     if (escaped) {
@@ -34,7 +34,7 @@ export const hasNestedQuantifier = (source: string): boolean => {
       continue;
     }
     if (ch === ")") {
-      const groupHadQuantifier = innerHasQuantifier;
+      const groupHadQuantifier: boolean = innerHasQuantifier;
       // A quantified group nested inside another quantified context is the
       // ReDoS shape even across group boundaries: ((a+))+.
       innerHasQuantifier = (stack.pop() ?? false) || groupHadQuantifier;

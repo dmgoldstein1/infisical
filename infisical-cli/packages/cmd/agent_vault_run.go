@@ -956,10 +956,10 @@ func withAgentVaultConnectEnv(env []string, proxyAddr, sessionToken, caPath, api
 
 	hasDomain := false
 	// Bound the allocation below. Entries come from os.Environ, which the OS
-	// caps near ARG_MAX (~2MB total), so a count anywhere near overflow is
-	// impossible; truncate defensively rather than fail a real spawn.
+	// caps near ARG_MAX, so a count anywhere near overflow is a caller bug:
+	// fail closed instead of sizing an allocation from it.
 	if len(env) > maxAgentVaultEnvEntries {
-		env = env[:maxAgentVaultEnvEntries]
+		return nil
 	}
 	out := make([]string, 0, len(env)+len(set)+1)
 	for _, kv := range env {

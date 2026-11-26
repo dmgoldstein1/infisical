@@ -27,7 +27,7 @@ vi.mock("@peculiar/x509", () => ({
   GeneralNames: vi.fn(),
   SubjectAlternativeNameExtension: vi
     .fn()
-    .mockImplementation(function SubjectAlternativeNameExtensionMock(names: unknown) {
+    .mockImplementation(function SubjectAlternativeNameExtension(names: unknown) {
       return { type: "2.5.29.17", value: names };
     }),
   KeyUsagesExtension: vi.fn(),

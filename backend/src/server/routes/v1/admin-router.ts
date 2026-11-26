@@ -22,7 +22,7 @@ import {
   PasswordPolicySchema,
   PKCS12_PASSWORD_POLICY
 } from "@app/lib/validator/password-policy";
-import { invalidateCacheLimit, readLimit, writeLimit } from "@app/server/config/rateLimiter";
+import { invalidateCacheLimit, inviteUserRateLimit, readLimit, writeLimit } from "@app/server/config/rateLimiter";
 import { addAuthOriginDomainCookie } from "@app/server/lib/cookie";
 import { GenericResourceNameSchema } from "@app/server/lib/schemas";
 import { getTelemetryDistinctId } from "@app/server/lib/telemetry";
@@ -1251,7 +1251,7 @@ export const registerAdminRouter = async (server: FastifyZodProvider) => {
     method: "POST",
     url: "/organization-management/organizations/:organizationId/memberships/:membershipId/resend-invite",
     config: {
-      rateLimit: writeLimit
+      rateLimit: inviteUserRateLimit
     },
     schema: {
       operationId: "resendAdminOrganizationInvite",

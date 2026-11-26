@@ -34,6 +34,11 @@ func sealSessionLogWithRand(random io.Reader, key, plaintext, aad []byte) ([]byt
 	if err != nil {
 		return nil, fmt.Errorf("agent-vault: session log key is not a valid AES key: %w", err)
 	}
+	// Bound the allocation below: sealers chunk plaintext to sessionLogMaxChunkPlaintext
+	// before calling, so anything larger is a caller bug, not a bigger log.
+	if len(plaintext) > sessionLogMaxChunkPlaintext {
+		return nil, fmt.Errorf("agent-vault: session log chunk too large: %d bytes", len(plaintext))
+	}
 	gcm, err := cipher.NewGCM(block)
 	if err != nil {
 		return nil, fmt.Errorf("agent-vault: could not build GCM: %w", err)

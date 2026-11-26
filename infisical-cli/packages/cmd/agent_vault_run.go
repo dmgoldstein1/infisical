@@ -42,6 +42,11 @@ import (
 // 422 body, which is all the CLI can print for a schema rejection.
 var agentVaultBundleNameRe = regexp.MustCompile(`^[a-z0-9-]{1,64}$`)
 
+// Allocation bound for withAgentVaultConnectEnv: entries come from os.Environ,
+// which the OS caps near ARG_MAX, so this is unreachable in practice and only
+// bounds the make() below against a hostile caller-supplied slice.
+const maxAgentVaultEnvEntries = 1 << 20
+
 // One file per proxy, so a run against a second proxy cannot overwrite the certificate an agent that is
 // already running still trusts through its environment. The ID comes from the proxy over unauthenticated
 // HTTP, so it is checked as a UUID before it can shape a path.
@@ -950,6 +955,12 @@ func withAgentVaultConnectEnv(env []string, proxyAddr, sessionToken, caPath, api
 	}
 
 	hasDomain := false
+	// Bound the allocation below. Entries come from os.Environ, which the OS
+	// caps near ARG_MAX (~2MB total), so a count anywhere near overflow is
+	// impossible; truncate defensively rather than fail a real spawn.
+	if len(env) > maxAgentVaultEnvEntries {
+		env = env[:maxAgentVaultEnvEntries]
+	}
 	out := make([]string, 0, len(env)+len(set)+1)
 	for _, kv := range env {
 		key, _, _ := strings.Cut(kv, "=")

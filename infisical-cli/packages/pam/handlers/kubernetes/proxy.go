@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -42,6 +43,22 @@ type KubernetesProxy struct {
 
 func NewKubernetesProxy(config KubernetesProxyConfig) *KubernetesProxy {
 	return &KubernetesProxy{config: config}
+}
+
+// credentialHeaders are never written to session audit logs: the session log
+// is an audit trail of what was proxied, not a vault for the credentials that
+// did it. Mirrors the AWS proxy's loggedHeaders redaction.
+var credentialHeaders = []string{
+	"Authorization", "Proxy-Authorization", "Cookie",
+	"X-Amz-Security-Token", "X-Amz-Sso_bearer_token", "X-Api-Key",
+}
+
+func loggedHeaders(header http.Header) http.Header {
+	logged := header.Clone()
+	for _, name := range credentialHeaders {
+		logged.Del(name)
+	}
+	return logged
 }
 
 // injectAuthHeaders sets the appropriate auth headers based on the configured auth method.
@@ -86,7 +103,11 @@ func (p *KubernetesProxy) injectAuthHeaders(headers http.Header) error {
 }
 
 func buildHttpInternalServerError(message string) string {
-	return fmt.Sprintf("HTTP/1.1 500 Internal Server Error\r\nContent-Type: application/json\r\n\r\n{\"message\": \"gateway: %s\"}", message)
+	body, err := json.Marshal(map[string]string{"message": "gateway: " + message})
+	if err != nil {
+		body = []byte(`{"message": "gateway: internal error"}`)
+	}
+	return "HTTP/1.1 500 Internal Server Error\r\nContent-Type: application/json\r\n\r\n" + string(body)
 }
 
 func (p *KubernetesProxy) HandleConnection(ctx context.Context, clientConn net.Conn) error {
@@ -169,8 +190,9 @@ func (p *KubernetesProxy) HandleConnection(ctx context.Context, clientConn net.C
 			EventType: session.HttpEventRequest,
 			URL:       req.URL.String(),
 			Method:    req.Method,
-			// TODO: filter out sensitive headers?
-			Headers: req.Header,
+			// Credential headers are redacted: the session log is an audit
+			// trail of what was proxied, not a vault for the credentials.
+			Headers: loggedHeaders(req.Header),
 			Body:    reqBody,
 		})
 		if err != nil {

@@ -146,6 +146,9 @@ func alterPasswordStatement(params sqlRotateParams, targetUsername, sessionUsern
 	if strings.Contains(targetUsername, `"`) {
 		return "", fmt.Errorf("oracle username cannot contain a double quote")
 	}
+	if strings.Contains(params.NewPassword, `"`) {
+		return "", fmt.Errorf("oracle password cannot contain a double quote")
+	}
 
 	stmt := fmt.Sprintf(`ALTER USER "%s" IDENTIFIED BY "%s"`, targetUsername, params.NewPassword)
 

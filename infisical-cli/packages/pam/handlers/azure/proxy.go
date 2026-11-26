@@ -60,6 +60,22 @@ func (lw *limitedWriter) Write(p []byte) (int, error) {
 	return n, err
 }
 
+// credentialHeaders are never written to session audit logs: the session log
+// is an audit trail of what was proxied, not a vault for the credentials that
+// did it. Mirrors the AWS proxy's loggedHeaders redaction.
+var credentialHeaders = []string{
+	"Authorization", "Proxy-Authorization", "Cookie",
+	"X-Amz-Security-Token", "X-Amz-Sso_bearer_token", "X-Api-Key",
+}
+
+func loggedHeaders(header http.Header) http.Header {
+	logged := header.Clone()
+	for _, name := range credentialHeaders {
+		logged.Del(name)
+	}
+	return logged
+}
+
 func NewAzureProxy(config AzureProxyConfig) *AzureProxy {
 	return &AzureProxy{config: config}
 }
@@ -310,7 +326,7 @@ func (p *AzureProxy) forward(writer io.Writer, req *http.Request, client *http.C
 			EventType: session.HttpEventRequest,
 			URL:       req.URL.String(),
 			Method:    req.Method,
-			Headers:   req.Header,
+			Headers:   loggedHeaders(req.Header),
 			Body:      loggedReqBody,
 		}); err != nil {
 			l.Error().Err(err).Msg("Failed to log HTTP request event")

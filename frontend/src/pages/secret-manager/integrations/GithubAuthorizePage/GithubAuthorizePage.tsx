@@ -1,4 +1,4 @@
-import crypto from "crypto";
+import { randomHex } from "@app/lib/random";
 import { useState } from "react";
 import { faArrowUpRightFromSquare, faBookOpen } from "@fortawesome/free-solid-svg-icons";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
@@ -114,7 +114,7 @@ export const GithubAuthorizePage = () => {
                   return;
                 }
 
-                const state = crypto.randomBytes(16).toString("hex");
+                const state = randomHex(16);
                 localStorage.setItem("latestCSRFToken", state);
                 localStorageService.setIntegrationProjectId(currentProject.id);
                 window.location.assign(

@@ -71,7 +71,7 @@ const DecryptForm = ({ cmek, cmekDecrypt }: FormProps) => {
     });
 
     setPlaintext(
-      shouldDecode ? Buffer.from(decodeBase64(data.plaintext)).toString("utf8") : data.plaintext
+      shouldDecode ? new TextDecoder().decode(decodeBase64(data.plaintext)) : data.plaintext
     );
   };
 
@@ -81,7 +81,7 @@ const DecryptForm = ({ cmek, cmekDecrypt }: FormProps) => {
     const text = cmekDecrypt.data?.plaintext;
     if (!text) return;
 
-    setPlaintext(shouldDecode ? Buffer.from(decodeBase64(text)).toString("utf8") : text);
+    setPlaintext(shouldDecode ? new TextDecoder().decode(decodeBase64(text)) : text);
   }, [shouldDecode]);
 
   const handleCopyToClipboard = () => {

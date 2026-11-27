@@ -1,4 +1,4 @@
-import crypto from "crypto";
+import { randomHex } from "@app/lib/random";
 import { useId, useState } from "react";
 import { Controller, useFieldArray, useForm } from "react-hook-form";
 import { useTranslation } from "react-i18next";
@@ -129,7 +129,7 @@ const ServiceTokenForm = () => {
   const onFormSubmit = async ({ name, scopes, expiresIn, permissions }: FormData) => {
     if (!currentProject?.id) return;
 
-    const randomBytes = crypto.randomBytes(16).toString("hex");
+    const randomBytes = randomHex(16);
 
     const { serviceToken } = await createServiceToken.mutateAsync({
       encryptedKey: "",

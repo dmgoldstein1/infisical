@@ -1,5 +1,5 @@
 /* eslint-disable no-case-declarations */
-import crypto from "crypto";
+import { randomHex } from "@app/lib/random";
 import { useState } from "react";
 import { Controller, FormProvider, useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
@@ -205,7 +205,7 @@ export const AzureDevOpsConnectionForm = ({ appConnection, onSubmit, projectId }
     switch (formData.method) {
       case AzureDevOpsConnectionMethod.OAuth:
         setIsRedirecting(true);
-        const state = crypto.randomBytes(16).toString("hex");
+        const state = randomHex(16);
         localStorage.setItem("latestCSRFToken", state);
         localStorage.setItem(
           "azureDevOpsConnectionFormData",

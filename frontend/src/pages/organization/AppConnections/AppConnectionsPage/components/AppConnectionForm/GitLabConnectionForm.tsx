@@ -1,6 +1,6 @@
 /* eslint-disable no-case-declarations */
 /* eslint-disable no-nested-ternary */
-import crypto from "crypto";
+import { randomHex } from "@app/lib/random";
 import { useState } from "react";
 import { Controller, FormProvider, useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
@@ -145,7 +145,7 @@ export const GitLabConnectionForm = ({ appConnection, onSubmit: formSubmit, proj
           setIsRedirecting(true);
 
           // Generate CSRF token
-          const state = crypto.randomBytes(16).toString("hex");
+          const state = randomHex(16);
 
           // Store state and form data for callback
           localStorage.setItem("latestCSRFToken", state);

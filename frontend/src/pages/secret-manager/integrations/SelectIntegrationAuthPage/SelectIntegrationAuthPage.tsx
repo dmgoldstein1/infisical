@@ -1,4 +1,4 @@
-import crypto from "crypto";
+import { randomHex } from "@app/lib/random";
 import { useCallback, useEffect } from "react";
 import { useNavigate, useSearch } from "@tanstack/react-router";
 
@@ -95,7 +95,7 @@ export const SelectIntegrationAuthPage = () => {
   );
 
   const handleNewConnection = () => {
-    const state = crypto.randomBytes(16).toString("hex");
+    const state = randomHex(16);
     localStorage.setItem("latestCSRFToken", state);
 
     if (integrationSlug === "github") {

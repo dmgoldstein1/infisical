@@ -1,4 +1,4 @@
-import crypto from "crypto";
+import { randomHex } from "@app/lib/random";
 import { useState } from "react";
 import { Controller, useForm } from "react-hook-form";
 import { faGoogle } from "@fortawesome/free-brands-svg-icons";
@@ -58,7 +58,7 @@ export const GcpSecretManagerAuthorizePage = () => {
 
     if (!integrationOption) return;
 
-    const state = crypto.randomBytes(16).toString("hex");
+    const state = randomHex(16);
     localStorage.setItem("latestCSRFToken", state);
     localStorageService.setIntegrationProjectId(currentProject.id);
 

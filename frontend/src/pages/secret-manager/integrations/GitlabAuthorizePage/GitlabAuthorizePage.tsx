@@ -1,4 +1,4 @@
-import crypto from "crypto";
+import { randomHex } from "@app/lib/random";
 import { Controller, useForm } from "react-hook-form";
 import { faArrowUpRightFromSquare, faBookOpen } from "@fortawesome/free-solid-svg-icons";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
@@ -60,7 +60,7 @@ export const GitlabAuthorizePage = () => {
 
     const baseURL = sanitizeHttpBaseUrl(gitLabURL, "https://gitlab.com");
 
-    const csrfToken = crypto.randomBytes(16).toString("hex");
+    const csrfToken = randomHex(16);
     localStorage.setItem("latestCSRFToken", csrfToken);
     localStorageService.setIntegrationProjectId(currentProject.id);
 

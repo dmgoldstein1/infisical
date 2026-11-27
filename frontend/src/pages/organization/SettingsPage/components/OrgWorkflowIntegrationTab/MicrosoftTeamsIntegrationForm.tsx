@@ -1,4 +1,4 @@
-import crypto from "crypto";
+import { randomHex } from "@app/lib/random";
 import { useEffect } from "react";
 import { Controller, useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
@@ -108,7 +108,7 @@ export const MicrosoftTeamsIntegrationForm = ({ id, onClose, onBack }: Props) =>
 
       onClose();
     } else {
-      const csrfToken = crypto.randomBytes(32).toString("hex");
+      const csrfToken = randomHex(32);
       localStorage.setItem("latestCSRFToken", csrfToken);
 
       const state = {

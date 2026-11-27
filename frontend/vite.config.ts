@@ -4,7 +4,6 @@ import path from "node:path";
 import { TanStackRouterVite } from "@tanstack/router-plugin/vite";
 import react from "@vitejs/plugin-react";
 import { defineConfig, loadEnv, PluginOption } from "vite";
-import { nodePolyfills } from "vite-plugin-node-polyfills";
 import wasm from "vite-plugin-wasm";
 import tsconfigPaths from "vite-tsconfig-paths";
 
@@ -117,11 +116,6 @@ export default defineConfig(({ mode }) => {
     },
     plugins: [
       tsconfigPaths(),
-      nodePolyfills({
-        globals: {
-          Buffer: true
-        }
-      }),
       wasm(),
       TanStackRouterVite({
         virtualRouteConfig: "./src/routes.ts"

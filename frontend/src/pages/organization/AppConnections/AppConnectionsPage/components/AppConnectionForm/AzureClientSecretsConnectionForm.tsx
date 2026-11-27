@@ -1,4 +1,4 @@
-import crypto from "crypto";
+import { randomHex } from "@app/lib/random";
 import { useState } from "react";
 import { Controller, FormProvider, useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
@@ -198,7 +198,7 @@ export const AzureClientSecretsConnectionForm = ({ appConnection, onSubmit, proj
   const selectedMethod = watch("method");
 
   const onSubmitHandler = async (formData: FormData) => {
-    const state = crypto.randomBytes(16).toString("hex");
+    const state = randomHex(16);
     switch (formData.method) {
       case AzureClientSecretsConnectionMethod.OAuth:
         setIsRedirecting(true);

@@ -1,4 +1,4 @@
-import crypto from "crypto";
+import { randomHex } from "@app/lib/random";
 import { useEffect, useMemo } from "react";
 import { Controller, useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
@@ -132,7 +132,7 @@ export const HoneyTokenModal = ({ isOpen, onOpenChange }: Props) => {
     } else {
       reset({
         connectionId: "",
-        webhookSigningKey: crypto.randomBytes(WEBHOOK_SIGNING_KEY_BYTES).toString("hex"),
+        webhookSigningKey: randomHex(WEBHOOK_SIGNING_KEY_BYTES),
         stackName: DEFAULT_STACK_NAME,
         awsRegion: DEFAULT_AWS_REGION
       });

@@ -2,10 +2,12 @@ package util
 
 import (
 	"bytes"
+	cryptorand "crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
 	"fmt"
+	"math/big"
 	"math/rand"
 	"net"
 	"os"
@@ -734,7 +736,11 @@ func GetBoolFlagOrEnv(cmd *cobra.Command, flag string, envName string) bool {
 func GenerateRandomString(length int) string {
 	b := make([]byte, length)
 	for i := range b {
-		b[i] = charset[rand.Intn(len(charset))]
+		n, err := cryptorand.Int(cryptorand.Reader, big.NewInt(int64(len(charset))))
+		if err != nil {
+			panic("util: no randomness for GenerateRandomString")
+		}
+		b[i] = charset[n.Int64()]
 	}
 	return string(b)
 }

@@ -12,6 +12,8 @@
 package fakenet
 
 import (
+	"crypto/hmac"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -181,9 +183,19 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	log.Printf("%-6s %s%s -> %d  scope=%s", r.Method, hostOf(r), r.URL.Path, rec.status, short(key))
 }
 
+var shortSalt = sync.OnceValue(func() [32]byte {
+	var b [32]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		panic("fakenet: no randomness")
+	}
+	return b
+})
+
 func short(key string) string {
-	sum := sha256.Sum256([]byte(key))
-	return hex.EncodeToString(sum[:])[:12] + "..."
+	salt := shortSalt()
+	mac := hmac.New(sha256.New, salt[:])
+	mac.Write([]byte(key))
+	return hex.EncodeToString(mac.Sum(nil))[:12] + "..."
 }
 
 // scope returns a scope, creating it the first time a credential is seen.

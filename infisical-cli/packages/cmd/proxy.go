@@ -305,27 +305,7 @@ func startProxyServer(cmd *cobra.Command, args []string) {
 			}
 
 			// Stream with periodic flushing for SSE events
-			buf := make([]byte, 1024)
-			for {
-				n, err := resp.Body.Read(buf)
-				if n > 0 {
-					if _, writeErr := w.Write(buf[:n]); writeErr != nil {
-						log.Error().Err(writeErr).Msg("Failed to write streaming response")
-						return
-					}
-					// Flush after each write to send SSE events immediately
-					if flusher, ok := w.(http.Flusher); ok {
-						flusher.Flush()
-					}
-				}
-				if errors.Is(err, io.EOF) || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-					break
-				}
-				if err != nil {
-					log.Error().Err(err).Msg("Failed to read streaming response")
-					return
-				}
-			}
+			relayStreamedBody(w, resp.Body)
 			return
 		}
 
@@ -599,6 +579,34 @@ func printCacheDebug(cmd *cobra.Command, args []string) {
 
 // serveCachedResponse looks up the cache for the request using the caller's token.
 // Returns true if a cached response was written to w.
+// relayStreamedBody copies a streaming response body to the client verbatim,
+// flushing after each chunk so SSE events arrive immediately. Bytes must pass
+// through untouched: the stream carries JSON event payloads and binary
+// frames, and any transformation (e.g. HTML-escaping) corrupts them.
+func relayStreamedBody(w http.ResponseWriter, body io.Reader) {
+	buf := make([]byte, 1024)
+	for {
+		n, err := body.Read(buf)
+		if n > 0 {
+			if _, writeErr := w.Write(buf[:n]); writeErr != nil {
+				log.Error().Err(writeErr).Msg("Failed to write streaming response")
+				return
+			}
+			// Flush after each write to send SSE events immediately
+			if flusher, ok := w.(http.Flusher); ok {
+				flusher.Flush()
+			}
+		}
+		if errors.Is(err, io.EOF) || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			break
+		}
+		if err != nil {
+			log.Error().Err(err).Msg("Failed to read streaming response")
+			return
+		}
+	}
+}
+
 func serveCachedResponse(w http.ResponseWriter, r *http.Request, c *proxy.Cache, token string) bool {
 	cacheKey := proxy.GenerateCacheKey(r.Method, r.URL.Path, r.URL.RawQuery, token)
 

@@ -5,25 +5,24 @@ import (
 	"testing"
 )
 
-// Pins the CodeQL go/reflected-xss disposition for recorder.Write: it forwards
-// handler bytes untouched for the call log. The test-only fakenet server never
-// serves browsers, and HTML-escaping here would corrupt recorded bodies; this
-// test FAILS if output encoding is ever applied here.
-func TestRecorderPreservesBodyBytes(t *testing.T) {
-	t.Parallel()
+// Pins the CodeQL go/reflected-xss disposition for recorder.Write: the
+// recorder is an opaque byte relay that captures the status for the call log
+// without buffering the body. It must forward bytes exactly; HTML-escaping
+// the relay would corrupt fake API responses under test. This test FAILS if
+// Write transforms a single byte.
+func TestRecorderPreservesBytesExactly(t *testing.T) {
+	payload := []byte("<div>&\"'broken\x00\xff\xfe\"'</div>")
+	rec := &recorder{ResponseWriter: httptest.NewRecorder()}
 
-	payload := []byte(`{"message":"<script>alert(1)</script>"}`)
-	rec := httptest.NewRecorder()
-	r := &recorder{ResponseWriter: rec}
-
-	n, err := r.Write(payload)
+	n, err := rec.Write(payload)
 	if err != nil {
-		t.Fatalf("Write failed: %v", err)
+		t.Fatalf("Write returned error: %v", err)
 	}
 	if n != len(payload) {
-		t.Fatalf("Write returned %d, want %d", n, len(payload))
+		t.Fatalf("Write wrote %d bytes, want %d", n, len(payload))
 	}
-	if rec.Body.String() != string(payload) {
-		t.Fatalf("recorded bytes mutated: got %q want %q", rec.Body.String(), payload)
+	got := rec.ResponseWriter.(*httptest.ResponseRecorder).Body.Bytes()
+	if string(got) != string(payload) {
+		t.Fatalf("Write transformed the relay: got %q, want %q", got, payload)
 	}
 }

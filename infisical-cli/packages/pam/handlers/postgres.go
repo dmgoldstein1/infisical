@@ -621,20 +621,25 @@ func (p *PostgresProxy) handleCleartextPasswordAsProxy(clientBackend *pgproto3.B
 	}
 }
 
+// The PostgreSQL md5 authentication wire format (md5(md5(password + user) +
+// server salt)). The server dictates both the algorithm and the layout: any
+// other digest is rejected at login.
+func postgresMD5Password(password, username string, salt [4]byte) string {
+	firstHash := md5.Sum([]byte(password + username))
+	firstHashHex := fmt.Sprintf("%x", firstHash)
+
+	secondInput := append([]byte(firstHashHex), salt[:]...)
+	secondHash := md5.Sum(secondInput)
+	return fmt.Sprintf("md5%x", secondHash)
+}
+
 func (p *PostgresProxy) handleMD5PasswordAsProxy(clientBackend *pgproto3.Backend, serverFrontend *pgproto3.Frontend, authMD5 *pgproto3.AuthenticationMD5Password) error {
 	// Calculate MD5 hash: md5(md5(password + username) + salt)
 	username := p.config.InjectUsername
 	password := p.config.InjectPassword
 	salt := authMD5.Salt
 
-	// First hash: md5(password + username)
-	firstHash := md5.Sum([]byte(password + username))
-	firstHashHex := fmt.Sprintf("%x", firstHash)
-
-	// Second hash: md5(firstHashHex + salt)
-	secondInput := append([]byte(firstHashHex), salt[:]...)
-	secondHash := md5.Sum(secondInput)
-	finalHash := fmt.Sprintf("md5%x", secondHash)
+	finalHash := postgresMD5Password(password, username, salt)
 
 	// Send the MD5 hashed password to the server
 	passwordMsg := &pgproto3.PasswordMessage{

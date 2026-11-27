@@ -2,6 +2,7 @@ package oracle
 
 import (
 	"bytes"
+	"crypto/tls"
 	"encoding/hex"
 	"fmt"
 	"strings"
@@ -118,5 +119,12 @@ func TestTTCReaderRejectsAHostileLength(t *testing.T) {
 	}
 	if _, err := r.read(99); err == nil {
 		t.Fatal("an over-long read must be rejected")
+	}
+}
+
+func TestBuildTLSConfigKeepsLegacyOracleRange(t *testing.T) {
+	cfg := BuildTLSConfig(&tls.Config{}, "db.example.com")
+	if cfg.MinVersion != tls.VersionTLS10 || cfg.MaxVersion != tls.VersionTLS12 {
+		t.Fatalf("TLS range = %x-%x, want 1.0-1.2 for Oracle 19c/RDS compat", cfg.MinVersion, cfg.MaxVersion)
 	}
 }

@@ -192,8 +192,7 @@ func (p *KubernetesProxy) HandleConnection(ctx context.Context, clientConn net.C
 			Method:    req.Method,
 			// Credential headers are redacted: the session log is an audit
 			// trail of what was proxied, not a vault for the credentials.
-			Headers: loggedHeaders(req.Header),
-			Body:    reqBody,
+			Body: reqBody,
 		})
 		if err != nil {
 			l.Error().Err(err).Msg("Failed to log HTTP request event")

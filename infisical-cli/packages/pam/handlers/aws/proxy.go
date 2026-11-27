@@ -389,7 +389,6 @@ func (p *AWSProxy) handleRequest(ctx context.Context, w io.Writer, req *http.Req
 		EventType: session.HttpEventRequest,
 		URL:       loggedURL,
 		Method:    req.Method,
-		Headers:   loggedHeaders(req.Header),
 		Body:      loggedRequestBody.Bytes(),
 	}, l)
 

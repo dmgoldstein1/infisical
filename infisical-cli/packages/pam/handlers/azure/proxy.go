@@ -326,7 +326,6 @@ func (p *AzureProxy) forward(writer io.Writer, req *http.Request, client *http.C
 			EventType: session.HttpEventRequest,
 			URL:       req.URL.String(),
 			Method:    req.Method,
-			Headers:   loggedHeaders(req.Header),
 			Body:      loggedReqBody,
 		}); err != nil {
 			l.Error().Err(err).Msg("Failed to log HTTP request event")

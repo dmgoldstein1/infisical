@@ -2,6 +2,7 @@ package util
 
 import (
 	"bytes"
+	"crypto/hmac"
 	cryptorand "crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
@@ -745,6 +746,24 @@ func GenerateRandomString(length int) string {
 	return string(b)
 }
 
+var (
+	etagKeyOnce sync.Once
+	etagKey     []byte
+)
+
+// etagSigningKey returns a process-ephemeral HMAC key for ETags. ETags are
+// opaque cache validators: keying the digest keeps secret bytes out of a
+// bare fast hash while instability across restarts only costs extra 200s.
+func etagSigningKey() []byte {
+	etagKeyOnce.Do(func() {
+		etagKey = make([]byte, 32)
+		if _, err := rand.Read(etagKey); err != nil {
+			panic("util: no randomness for ETag key")
+		}
+	})
+	return etagKey
+}
+
 func GenerateETagFromSecrets(secrets []models.SingleEnvironmentVariable) string {
 	sortedSecrets := SortSecretsByKeys(secrets)
 	content := []byte{}
@@ -754,8 +773,9 @@ func GenerateETagFromSecrets(secrets []models.SingleEnvironmentVariable) string 
 		content = append(content, []byte(secret.Value)...)
 	}
 
-	hash := sha256.Sum256(content)
-	return fmt.Sprintf(`"%s"`, hex.EncodeToString(hash[:]))
+	mac := hmac.New(sha256.New, etagSigningKey())
+	mac.Write(content)
+	return fmt.Sprintf(`"%s"`, hex.EncodeToString(mac.Sum(nil)))
 }
 
 func IsDevelopmentMode() bool {

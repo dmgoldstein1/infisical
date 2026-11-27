@@ -3,6 +3,8 @@ package agentvault
 import (
 	"sync/atomic"
 
+	"crypto/hmac"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -115,10 +117,24 @@ type credentialSwap struct {
 	gen         uint64
 }
 
-// The map key is the sha256 of the token, never the token itself, so a heap dump yields no live credential.
+// The map key is an HMAC of the token under a key drawn at startup, never the
+// token itself and never a plain fast hash of it, so a heap dump yields no
+// live credential and no offline-guessable token image. Keys stay consistent
+// for the process lifetime, which is all the in-memory maps and log labels
+// below need.
+var sessionKeySalt = sync.OnceValue(func() [32]byte {
+	var salt [32]byte
+	if _, err := rand.Read(salt[:]); err != nil {
+		panic("agent-vault: no randomness for session key derivation")
+	}
+	return salt
+})
+
 func sessionKey(token string) string {
-	sum := sha256.Sum256([]byte(token))
-	return hex.EncodeToString(sum[:])
+	salt := sessionKeySalt()
+	mac := hmac.New(sha256.New, salt[:])
+	mac.Write([]byte(token))
+	return hex.EncodeToString(mac.Sum(nil))
 }
 
 type sessionResolver interface {

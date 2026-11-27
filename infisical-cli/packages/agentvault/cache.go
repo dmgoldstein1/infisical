@@ -117,21 +117,22 @@ type credentialSwap struct {
 	gen         uint64
 }
 
-// sessionHMACKey is process-local randomness for sessionKey: the key only
-// indexes in-memory maps and log lines, so it needs consistency within the
-// process, not across restarts. A heap dump then yields no token-derived
-// value an offline brute force could invert, unlike a plain SHA256.
-var sessionHMACKey = func() []byte {
-	key := make([]byte, 32)
-	if _, err := rand.Read(key); err != nil {
-		panic("agentvault: cannot seed session HMAC key: " + err.Error())
+// The map key is an HMAC of the token under a key drawn at startup, never the
+// token itself and never a plain fast hash of it, so a heap dump yields no
+// live credential and no offline-guessable token image. Keys stay consistent
+// for the process lifetime, which is all the in-memory maps and log labels
+// below need.
+var sessionKeySalt = sync.OnceValue(func() [32]byte {
+	var salt [32]byte
+	if _, err := rand.Read(salt[:]); err != nil {
+		panic("agent-vault: no randomness for session key derivation")
 	}
-	return key
-}()
+	return salt
+})
 
-// The map key is the HMAC of the token, never the token itself, so a heap dump yields no live credential.
 func sessionKey(token string) string {
-	mac := hmac.New(sha256.New, sessionHMACKey)
+	salt := sessionKeySalt()
+	mac := hmac.New(sha256.New, salt[:])
 	mac.Write([]byte(token))
 	return hex.EncodeToString(mac.Sum(nil))
 }

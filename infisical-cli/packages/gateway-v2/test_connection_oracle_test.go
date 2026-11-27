@@ -158,6 +158,18 @@ func TestAlterPasswordStatement(t *testing.T) {
 	if _, err := alterPasswordStatement(bad, bad.TargetUsername, bad.Username, true); err == nil {
 		t.Fatal("a username containing a double quote must be rejected")
 	}
+
+	quotedSecret := self
+	quotedSecret.NewPassword = `New"Pw`
+	if _, err := alterPasswordStatement(quotedSecret, quotedSecret.TargetUsername, quotedSecret.Username, true); err == nil {
+		t.Fatal("a new password containing a double quote must be rejected")
+	}
+
+	quotedCurrent := self
+	quotedCurrent.Password = `Old"Pw`
+	if _, err := alterPasswordStatement(quotedCurrent, quotedCurrent.TargetUsername, quotedCurrent.Username, true); err == nil {
+		t.Fatal("a current password containing a double quote must be rejected")
+	}
 }
 
 func TestRedactionSurvivesAtSignInPassword(t *testing.T) {

@@ -304,8 +304,7 @@ func startProxyServer(cmd *cobra.Command, args []string) {
 				flusher.Flush()
 			}
 
-			// Stream with periodic flushing for SSE events
-			relayStreamedBody(w, resp.Body)
+streamUpstreamBody(w, resp.Body)
 			return
 		}
 
@@ -579,11 +578,29 @@ func printCacheDebug(cmd *cobra.Command, args []string) {
 
 // serveCachedResponse looks up the cache for the request using the caller's token.
 // Returns true if a cached response was written to w.
-// relayStreamedBody copies a streaming response body to the client verbatim,
-// flushing after each chunk so SSE events arrive immediately. Bytes must pass
-// through untouched: the stream carries JSON event payloads and binary
-// frames, and any transformation (e.g. HTML-escaping) corrupts them.
-func relayStreamedBody(w http.ResponseWriter, body io.Reader) {
+func serveCachedResponse(w http.ResponseWriter, r *http.Request, c *proxy.Cache, token string) bool {
+	cacheKey := proxy.GenerateCacheKey(r.Method, r.URL.Path, r.URL.RawQuery, token)
+
+	if cachedResp, found := c.Get(cacheKey); found {
+		log.Info().Str("hash", cacheKey).Msg("Cache hit")
+		writeCachedResponse(w, cachedResp)
+		return true
+	}
+
+	log.Info().Str("hash", cacheKey).Msg("Cache miss")
+	return false
+}
+
+func writeCachedResponse(w http.ResponseWriter, cachedResp *http.Response) {
+	proxy.CopyHeaders(w.Header(), cachedResp.Header)
+	w.WriteHeader(cachedResp.StatusCode)
+	if _, err := io.Copy(w, cachedResp.Body); err != nil {
+		log.Error().Err(err).Msg("Failed to copy cached response body")
+	}
+}
+
+func streamUpstreamBody(w http.ResponseWriter, body io.Reader) {
+	// Stream with periodic flushing for SSE events
 	buf := make([]byte, 1024)
 	for {
 		n, err := body.Read(buf)
@@ -604,27 +621,6 @@ func relayStreamedBody(w http.ResponseWriter, body io.Reader) {
 			log.Error().Err(err).Msg("Failed to read streaming response")
 			return
 		}
-	}
-}
-
-func serveCachedResponse(w http.ResponseWriter, r *http.Request, c *proxy.Cache, token string) bool {
-	cacheKey := proxy.GenerateCacheKey(r.Method, r.URL.Path, r.URL.RawQuery, token)
-
-	if cachedResp, found := c.Get(cacheKey); found {
-		log.Info().Str("hash", cacheKey).Msg("Cache hit")
-		writeCachedResponse(w, cachedResp)
-		return true
-	}
-
-	log.Info().Str("hash", cacheKey).Msg("Cache miss")
-	return false
-}
-
-func writeCachedResponse(w http.ResponseWriter, cachedResp *http.Response) {
-	proxy.CopyHeaders(w.Header(), cachedResp.Header)
-	w.WriteHeader(cachedResp.StatusCode)
-	if _, err := io.Copy(w, cachedResp.Body); err != nil {
-		log.Error().Err(err).Msg("Failed to copy cached response body")
 	}
 }
 

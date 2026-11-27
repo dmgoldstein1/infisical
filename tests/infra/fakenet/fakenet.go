@@ -183,20 +183,17 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	log.Printf("%-6s %s%s -> %d  scope=%s", r.Method, hostOf(r), r.URL.Path, rec.status, short(key))
 }
 
-// shortKeyMAC is process-local randomness for short(): the fingerprint only
-// correlates log lines within one test run, so it needs in-process
-// consistency, not cross-run stability. A heap or log dump then yields no
-// token-derived value an offline brute force could invert, unlike plain SHA256.
-var shortKeyMAC = func() []byte {
-	key := make([]byte, 32)
-	if _, err := rand.Read(key); err != nil {
-		panic("fakenet: cannot seed fingerprint key: " + err.Error())
+var shortSalt = sync.OnceValue(func() [32]byte {
+	var b [32]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		panic("fakenet: no randomness")
 	}
-	return key
-}()
+	return b
+})
 
 func short(key string) string {
-	mac := hmac.New(sha256.New, shortKeyMAC)
+	salt := shortSalt()
+	mac := hmac.New(sha256.New, salt[:])
 	mac.Write([]byte(key))
 	return hex.EncodeToString(mac.Sum(nil))[:12] + "..."
 }

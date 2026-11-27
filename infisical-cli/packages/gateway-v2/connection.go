@@ -22,7 +22,7 @@ import (
 func buildHttpInternalServerError(message string) string {
 	body, err := json.Marshal(map[string]string{"message": "gateway: " + message})
 	if err != nil {
-		body = []byte(`{"message":"gateway: internal error"}`)
+		body = []byte(`{"message": "gateway: internal error"}`)
 	}
 	return "HTTP/1.1 500 Internal Server Error\r\nContent-Type: application/json\r\n\r\n" + string(body)
 }

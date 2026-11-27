@@ -3,13 +3,17 @@ package agentvault
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"crypto/x509"
 	"errors"
 	"fmt"
+	stdlog "log"
 	"net"
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -368,6 +372,16 @@ func serve(opts Options, s startup) error {
 		persisted: state,
 		legacy:    s.legacy,
 	}
+	if opts.Socks5 != nil {
+		ps.socks5AllowPrivate = opts.Socks5.AllowPrivateDestinations
+		if !ps.socks5AllowPrivate {
+			guarded, err := newGuardedUpstreamTransport()
+			if err != nil {
+				return err
+			}
+			ps.guardedTransport = guarded
+		}
+	}
 	resolver, err := newInfisicalResolver(opts.ProxyToken)
 	if err != nil {
 		return err
@@ -379,11 +393,44 @@ func serve(opts Options, s startup) error {
 		return err
 	}
 	ps.sessionLogs = newSessionLogRecorder(state.ProxyID, shipper)
+	ps.usage = newUsageReporter(sendUsageReports(opts.ProxyToken), sendFinalUsageReports(opts.ProxyToken))
 
 	// Port 0 is not "unset": it is the ordinary ask for any free port, so it is never substituted.
-	listener, err := net.Listen("tcp", fmt.Sprintf(":%d", opts.Port))
+	listenAddr := net.JoinHostPort(opts.ListenHost, strconv.Itoa(opts.Port))
+	listener, err := net.Listen("tcp", listenAddr)
 	if err != nil {
-		return fmt.Errorf("failed to listen on port %d: %w", opts.Port, err)
+		return fmt.Errorf("failed to listen on %s: %w", listenAddr, err)
+	}
+
+	// Opened before anything starts, so a SOCKS5 port that can't be used stops the start instead of leaving a
+	// proxy that only half works. It binds every interface: it is the door meant to face the network.
+	var socks *socks5Server
+	var socksListener net.Listener
+	if opts.Socks5 != nil {
+		tlsConfig := socks5TLSConfig(ca, opts.Socks5)
+		if opts.Socks5.Cert == nil {
+			if _, err := ca.mintLeaf(opts.Socks5.TLSName); err != nil {
+				_ = listener.Close()
+				return fmt.Errorf("failed to make a certificate for %s: %w", opts.Socks5.TLSName, err)
+			}
+		}
+		raw, err := net.Listen("tcp", fmt.Sprintf(":%d", opts.Socks5.Port))
+		if err != nil {
+			_ = listener.Close()
+			return fmt.Errorf("failed to listen for SOCKS5 on port %d: %w", opts.Socks5.Port, err)
+		}
+		socksListener = newLimitListener(raw, maxConcurrentConns, func() {
+			log.Warn().
+				Int("limit", maxConcurrentConns).
+				Str("door", "socks5").
+				Msg("agent-vault: SOCKS5 connection limit reached, new connections are waiting for a slot")
+		})
+		socks = newSocks5Server(ps, tlsConfig)
+	}
+	closeSocks := func() {
+		if socksListener != nil {
+			_ = socksListener.Close()
+		}
 	}
 
 	front := &http.Server{
@@ -391,25 +438,43 @@ func serve(opts Options, s startup) error {
 		ReadHeaderTimeout: frontReadHeaderTimeout,
 		IdleTimeout:       frontIdleTimeout,
 		MaxHeaderBytes:    maxRequestHeaderBytes,
+		// Never HTTP/2 on the TLS door: a database tunnel is a hijacked HTTP/1.1 CONNECT.
+		TLSNextProto: map[string]func(*http.Server, *tls.Conn, http.Handler){},
+		// net/http prints every failed TLS handshake on the door, which scanners and dropped clients cause all the
+		// time, as plain text on stderr.
+		ErrorLog: stdlog.New(debugLogWriter{}, "", 0),
 	}
 
-	limited := newLimitListener(listener, maxConcurrentConns, func() {
+	// A database or SSH connection keeps its slot for as long as it stays open, like an HTTPS tunnel.
+	limited := newDoorListener(newLimitListener(listener, maxConcurrentConns, func() {
 		log.Warn().
 			Int("limit", maxConcurrentConns).
 			Msg("agent-vault: connection limit reached, new connections are waiting for a slot")
-	})
+	}), proxyDoorTLSConfig(ca), doorPeekTimeout)
 
 	stop := make(chan struct{})
 	fatal := make(chan error, 1)
 	go ps.pollLoop(st, stop, fatal)
 	go ps.sessionLogs.run(stop)
+	go ps.usage.run(stop)
 
 	serveErr := make(chan error, 1)
 	go func() { serveErr <- front.Serve(limited) }()
 
+	// Stays nil without SOCKS5, so its select arm never fires.
+	var socksErr chan error
+	if socks != nil {
+		socksErr = make(chan error, 1)
+		go func() { socksErr <- socks.serve(socksListener) }()
+	}
+
 	// The bound port, not the requested one: they differ whenever port 0 was asked for.
 	listening := log.Info().
-		Int("port", listener.Addr().(*net.TCPAddr).Port).
+		Int("port", listener.Addr().(*net.TCPAddr).Port)
+	if opts.ListenHost != "" {
+		listening = listening.Str("host", opts.ListenHost)
+	}
+	listening = listening.
 		Str("proxyId", state.ProxyID).
 		Str("name", state.ProxyName).
 		Str("fingerprint", ca.Fingerprint())
@@ -418,11 +483,37 @@ func serve(opts Options, s startup) error {
 	}
 	listening.Msg("agent-vault: proxy listening")
 
+	if socks != nil {
+		socksListening := log.Info().
+			Str("door", "socks5").
+			Int("port", socksListener.Addr().(*net.TCPAddr).Port).
+			Bool("allowPrivateDestinations", opts.Socks5.AllowPrivateDestinations)
+		if cert := opts.Socks5.Cert; cert != nil {
+			socksListening = socksListening.
+				Str("certificate", "own").
+				Str("certificateFingerprint", cert.Fingerprint()).
+				Time("certificateExpiresAt", cert.NotAfter())
+		} else {
+			socksListening = socksListening.
+				Str("certificate", "minted from the proxy's certificate authority").
+				Str("tlsName", opts.Socks5.TLSName)
+		}
+		socksListening.Msg("agent-vault: SOCKS5 listening")
+		if cert := opts.Socks5.Cert; cert != nil {
+			go cert.watch(stop)
+		}
+		if opts.Socks5.AllowPrivateDestinations {
+			log.Warn().Str("door", "socks5").
+				Msg("agent-vault: SOCKS5 traffic may reach private and internal addresses")
+		}
+	}
+
 	signals := make(chan os.Signal, 1)
 	signal.Notify(signals, os.Interrupt, syscall.SIGTERM)
 
 	// Its own budget: in-flight requests can spend all of the shutdown's, and this is the last minute of session logs.
 	closeSessionLogs := func() {
+		ps.flushLateNativeLogs()
 		ctx, cancel := context.WithTimeout(context.Background(), sessionLogCloseTimeout)
 		defer cancel()
 		ps.sessionLogs.close(ctx)
@@ -431,31 +522,61 @@ func serve(opts Options, s startup) error {
 	select {
 	case err := <-serveErr:
 		close(stop)
-		closeSessionLogs()
+		closeSocks()
+		ps.cache.closeNative(nativeShutdownWait)
+		ps.closeReporting(closeSessionLogs)
 		ps.cache.close()
 		if errors.Is(err, http.ErrServerClosed) {
 			return nil
 		}
 		return err
-	case <-signals:
-		log.Info().Msg("agent-vault: shutting down")
+	case err := <-socksErr:
+		// serve returns nil only for a closed listener, and nothing closes it before this select ends.
+		if err == nil {
+			err = net.ErrClosed
+		}
 		close(stop)
+		closeSocks()
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		_ = front.Shutdown(ctx)
-		closeSessionLogs()
+		ps.cache.closeNative(nativeShutdownWait)
+		ps.closeReporting(closeSessionLogs)
+		ps.cache.close()
+		return fmt.Errorf("the SOCKS5 listener stopped: %w", err)
+	case <-signals:
+		log.Info().Msg("agent-vault: shutting down")
+		close(stop)
+		closeSocks()
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		_ = front.Shutdown(ctx)
+		ps.cache.closeNative(nativeShutdownWait)
+		ps.closeReporting(closeSessionLogs)
 		ps.cache.close()
 		return nil
 	case err := <-fatal:
 		close(stop)
+		closeSocks()
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		_ = front.Shutdown(ctx)
-		closeSessionLogs()
+		ps.cache.closeNative(nativeShutdownWait)
+		ps.closeReporting(closeSessionLogs)
 		ps.cache.close()
 		return err
 	}
 }
+
+// Session logs go first: they are the customer's record of what the agents did, and the usage report is small and
+// has its own short budget, so it never eats theirs.
+func (ps *proxyServer) closeReporting(closeSessionLogs func()) {
+	closeSessionLogs()
+	ps.usage.close()
+}
+
+// How long shutdown waits for open database and SSH connections to finish, so their last rows reach the session log.
+const nativeShutdownWait = 2 * time.Second
 
 // A 401 on the heartbeat is never transient. A timeout, a 5xx or a 429 rides out the grace window; a
 // rejected token does not.
@@ -552,4 +673,18 @@ func (ps *proxyServer) tick(st stateSaver) (tokenRejected bool) {
 
 	ps.cache.refreshInBackground()
 	return tokenRejected
+}
+
+// Only failed TLS handshakes go to debug. Anything else net/http reports, a recovered handler panic included, stays
+// an error.
+type debugLogWriter struct{}
+
+func (debugLogWriter) Write(p []byte) (int, error) {
+	line := strings.TrimRight(string(p), "\n")
+	if strings.HasPrefix(line, "http: TLS handshake error") {
+		log.Debug().Msg("agent-vault: " + line)
+	} else {
+		log.Error().Msg("agent-vault: " + line)
+	}
+	return len(p), nil
 }

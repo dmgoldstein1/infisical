@@ -1,0 +1,320 @@
+package agentvault
+
+import (
+	"bytes"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"net/http"
+	"strconv"
+	"strings"
+
+	"github.com/rs/zerolog/log"
+)
+
+const (
+	credentialSourceOAuth            = "oauth"
+	oauthStatusConnected             = "connected"
+	oauthStatusNeedsReauthorization  = "needs-reauthorization"
+	oauthStatusNeedsAdditionalScopes = "needs-additional-scopes"
+
+	// The backend's limits on requiredScopes; anything past them would fail the whole report.
+	maxReportedScopes   = 50
+	maxReportedScopeLen = 256
+)
+
+// The bodies of the response that replaces the upstream's auth failure. The upstream's WWW-Authenticate never
+// goes with it: passing its challenge on would start the agent's MCP client on an OAuth flow of its own, when
+// the credential belongs to Infisical.
+func upstreamAuthBody(code, message string) string {
+	body, _ := json.Marshal(map[string]string{"error": code, "message": message})
+	return string(body)
+}
+
+// For a credential the user stored, which only they can replace.
+func staticCredentialRejectedBody(svc *resolvedService) string {
+	if svc.memberProvided {
+		return upstreamAuthBody("upstream_auth_failed", fmt.Sprintf("The %s service rejected your credential. Update your personal value for it under Services in Infisical Agent Vault.", svc.name))
+	}
+	return upstreamAuthBody("upstream_auth_failed", fmt.Sprintf("The %s service's credential was rejected. Update it in Infisical Agent Vault.", svc.name))
+}
+
+func reauthorizationNeededBody(svc *resolvedService, status string) string {
+	if svc.memberProvided {
+		return upstreamAuthBody("upstream_auth_failed", fmt.Sprintf("Reconnect your account for the %s service under Services in Infisical Agent Vault.", svc.name))
+	}
+	if status == oauthStatusNeedsAdditionalScopes {
+		return upstreamAuthBody("upstream_auth_failed", fmt.Sprintf("The sign-in used by the %s service is missing a permission it needs and has to be connected again. This can't be fixed from here.", svc.name))
+	}
+	return upstreamAuthBody("upstream_auth_failed", fmt.Sprintf("The sign-in used by the %s service has expired and has to be connected again. This can't be fixed from here.", svc.name))
+}
+
+// For a failure that may pass on its own: Infisical or the provider unreachable, a body that could not be
+// replayed, or a refreshed token rejected for a reason Infisical does not know about.
+func credentialUnavailableBody(svc *resolvedService) string {
+	return upstreamAuthBody("upstream_auth_unavailable", fmt.Sprintf("Couldn't get a valid credential for the %s service. Try again in a moment.", svc.name))
+}
+
+// Sent with the 401 because RFC 9110 requires a challenge on one, and some clients (Java's HttpClient with an
+// Authenticator) throw without it. A scheme no client implements is passed through to the caller instead of
+// starting a sign-in of the client's own.
+const agentVaultChallenge = `AgentVault realm="Infisical Agent Vault"`
+
+// An HTTP client is told 401 for a sign-in that is dead and 403 for one missing a scope. An MCP client keeps
+// the 502, since a 401 is what starts its own OAuth flow.
+func reauthorizationNeeded(req *http.Request, svc *resolvedService, status string) *http.Response {
+	code := http.StatusBadGateway
+	var extra http.Header
+	if svc.kind != serviceKindMCP {
+		code = http.StatusUnauthorized
+		if status == oauthStatusNeedsAdditionalScopes {
+			code = http.StatusForbidden
+		} else {
+			extra = http.Header{"Www-Authenticate": {agentVaultChallenge}}
+		}
+	}
+	return upstreamAuthFailed(req, code, reauthorizationNeededBody(svc, status), extra)
+}
+
+func credentialUnavailable(req *http.Request, svc *resolvedService) *http.Response {
+	return upstreamAuthFailed(req, http.StatusBadGateway, credentialUnavailableBody(svc), nil)
+}
+
+// On a 401 the variable's needs-additional-scopes is not about this request: it is shared by every service on the
+// variable and survives refreshes, so only an insufficient_scope challenge the upstream itself sent is final.
+func refreshFailed(req *http.Request, svc *resolvedService, status string, scopeChallenged bool) *http.Response {
+	if status == oauthStatusNeedsReauthorization || (scopeChallenged && status == oauthStatusNeedsAdditionalScopes) {
+		return reauthorizationNeeded(req, svc, status)
+	}
+	return credentialUnavailable(req, svc)
+}
+
+// Once a refresh produced a new token the status can't say the sign-in is dead: it is the OAuth variable's,
+// shared by every service on it, and keeps needs-additional-scopes through successful refreshes. The new token
+// is cached, so the agent is told to try again.
+func refreshedTokenFailed(req *http.Request, svc *resolvedService, sent, fresh *credential, status string) *http.Response {
+	if credentialHash(fresh) != credentialHash(sent) {
+		return credentialUnavailable(req, svc)
+	}
+	return refreshFailed(req, svc, status, false)
+}
+
+// The request body as it will go upstream, when it can be sent a second time. Only a body already held in
+// memory, or none at all, can be: a streamed one is consumed by the first attempt.
+func replayableBody(req *http.Request) ([]byte, bool) {
+	if req.Body == nil || req.Body == http.NoBody {
+		return nil, true
+	}
+	if buffered, ok := req.Body.(*bufferedBody); ok {
+		return buffered.data, true
+	}
+	return nil, false
+}
+
+// handleUpstreamAuth runs only for a refreshable credential the proxy injected, so every other credential
+// sees the upstream's response untouched.
+func (ps *proxyServer) handleUpstreamAuth(upstream http.RoundTripper, req *http.Request, resp *http.Response, svc *resolvedService, sessionToken string, sent *credential, body []byte, replayable bool) (*http.Response, error) {
+	switch resp.StatusCode {
+	case http.StatusUnauthorized:
+		// An auth-error body can stay open indefinitely; draining it would stall the refresh.
+		_ = resp.Body.Close()
+		fresh, status, err := ps.cache.refreshCredential(sessionToken, svc.id, svc.hostPattern, sent)
+		// forwardHTTP answers these as it does for any request on a revoked session or proxy.
+		if refreshEndedSession(err) {
+			return nil, err
+		}
+		var notRecovered *refreshNotRecoveredError
+		if errors.As(err, &notRecovered) {
+			log.Warn().Str("service", svc.name).Str("serviceId", svc.id).Str("status", notRecovered.status).
+				Msg("agent-vault: the upstream rejected the OAuth token and Infisical has no other, not retrying")
+			return refreshFailed(req, svc, notRecovered.status, notRecovered.scopeChallenged), nil
+		}
+		if err != nil {
+			log.Warn().Err(err).Str("service", svc.name).Str("serviceId", svc.id).
+				Msg("agent-vault: the upstream rejected the OAuth token and Infisical could not refresh it")
+			return credentialUnavailable(req, svc), nil
+		}
+		if !replayable {
+			log.Warn().Str("service", svc.name).Str("serviceId", svc.id).Bool("replayable", replayable).Str("status", status).
+				Msg("agent-vault: the upstream rejected the OAuth token, not retrying")
+			return refreshedTokenFailed(req, svc, sent, &fresh, status), nil
+		}
+
+		retry := req.Clone(req.Context())
+		if len(body) == 0 {
+			retry.Body = http.NoBody
+		} else {
+			retry.Body = &bufferedBody{Reader: bytes.NewReader(body), data: body}
+		}
+		injectCredential(retry, &fresh)
+		retryResp, err := upstream.RoundTrip(retry)
+		if err != nil {
+			return nil, err
+		}
+		// Only a 401 or an insufficient_scope challenge is about the token. Any other 403 is the upstream's
+		// answer to the request, which the refreshed token may only now have reached.
+		if retryResp.StatusCode != http.StatusUnauthorized {
+			if !ps.reportInsufficientScope(retryResp, sessionToken, svc, &fresh) {
+				return retryResp, nil
+			}
+			_ = retryResp.Body.Close()
+			ps.cache.rememberRejectedRefresh(sessionToken, svc.id, svc.hostPattern, &fresh, oauthStatusNeedsAdditionalScopes, true)
+			log.Warn().Str("service", svc.name).Str("serviceId", svc.id).
+				Msg("agent-vault: the upstream needs OAuth scopes the refreshed token was not granted")
+			return reauthorizationNeeded(req, svc, oauthStatusNeedsAdditionalScopes), nil
+		}
+		_ = retryResp.Body.Close()
+		// Remembered without the shared status when that status was not the answer, so a repeat within the window
+		// is told the same thing.
+		if credentialHash(&fresh) != credentialHash(sent) {
+			status = ""
+		}
+		ps.cache.rememberRejectedRefresh(sessionToken, svc.id, svc.hostPattern, &fresh, status, false)
+		log.Warn().Str("service", svc.name).Str("serviceId", svc.id).Int("retryStatus", retryResp.StatusCode).
+			Msg("agent-vault: the upstream rejected the refreshed OAuth token too")
+		return refreshedTokenFailed(req, svc, sent, &fresh, status), nil
+
+	case http.StatusForbidden:
+		if !ps.reportInsufficientScope(resp, sessionToken, svc, sent) {
+			return resp, nil
+		}
+		_ = resp.Body.Close()
+		log.Warn().Str("service", svc.name).Str("serviceId", svc.id).
+			Msg("agent-vault: the upstream needs OAuth scopes this service was not granted")
+		return reauthorizationNeeded(req, svc, oauthStatusNeedsAdditionalScopes), nil
+	}
+	return resp, nil
+}
+
+// Reports whether the response was an insufficient_scope challenge. The scopes go to Infisical so the
+// service shows what reauthorizing has to request; a challenge naming none has nothing to record.
+func (ps *proxyServer) reportInsufficientScope(resp *http.Response, sessionToken string, svc *resolvedService, sent *credential) bool {
+	params, ok := insufficientScopeChallenge(resp)
+	if !ok {
+		return false
+	}
+	scopes := challengedScopes(params["scope"])
+	if len(scopes) == 0 {
+		return true
+	}
+	// In the background: the agent's answer does not depend on the report, so it need not wait for Infisical.
+	go func() {
+		if err := ps.cache.reportMissingScopes(sessionToken, svc.id, svc.hostPattern, sent, scopes); err != nil {
+			log.Warn().Err(err).Str("service", svc.name).Str("serviceId", svc.id).
+				Msg("agent-vault: could not report the upstream's required scopes to Infisical")
+		}
+	}()
+	return true
+}
+
+// A 403 whose Bearer challenge says the token lacks a scope, with the challenge's params.
+func insufficientScopeChallenge(resp *http.Response) (map[string]string, bool) {
+	if resp.StatusCode != http.StatusForbidden {
+		return nil, false
+	}
+	params := bearerChallengeParams(resp.Header.Values("WWW-Authenticate"))
+	return params, params["error"] == "insufficient_scope"
+}
+
+func challengedScopes(raw string) []string {
+	var scopes []string
+	for _, scope := range strings.Fields(raw) {
+		if len(scope) > maxReportedScopeLen {
+			continue
+		}
+		scopes = append(scopes, scope)
+		if len(scopes) == maxReportedScopes {
+			break
+		}
+	}
+	return scopes
+}
+
+func upstreamAuthFailed(req *http.Request, code int, body string, extra http.Header) *http.Response {
+	header := extra.Clone()
+	if header == nil {
+		header = make(http.Header)
+	}
+	header.Set("Content-Type", "application/json")
+	header.Set("Content-Length", strconv.Itoa(len(body)))
+	return &http.Response{
+		Status:        fmt.Sprintf("%d %s", code, http.StatusText(code)),
+		StatusCode:    code,
+		Proto:         "HTTP/1.1",
+		ProtoMajor:    1,
+		ProtoMinor:    1,
+		Header:        header,
+		Body:          io.NopCloser(strings.NewReader(body)),
+		ContentLength: int64(len(body)),
+		Request:       req,
+	}
+}
+
+// The auth-params of the Bearer challenges in WWW-Authenticate (RFC 9110 section 11.6.1), names
+// lower-cased, first occurrence kept. Params of other schemes are skipped.
+func bearerChallengeParams(values []string) map[string]string {
+	params := map[string]string{}
+	for _, value := range values {
+		inBearer := false
+		i := 0
+		for i < len(value) {
+			for i < len(value) && (value[i] == ' ' || value[i] == '\t' || value[i] == ',') {
+				i++
+			}
+			start := i
+			for i < len(value) && isTokenChar(value[i]) {
+				i++
+			}
+			if i == start {
+				i++
+				continue
+			}
+			name := value[start:i]
+			j := i
+			for j < len(value) && (value[j] == ' ' || value[j] == '\t') {
+				j++
+			}
+			if j >= len(value) || value[j] != '=' {
+				inBearer = strings.EqualFold(name, "bearer")
+				continue
+			}
+			i = j + 1
+			for i < len(value) && (value[i] == ' ' || value[i] == '\t') {
+				i++
+			}
+			var paramValue string
+			if i < len(value) && value[i] == '"' {
+				var b strings.Builder
+				i++
+				for i < len(value) && value[i] != '"' {
+					if value[i] == '\\' && i+1 < len(value) {
+						i++
+					}
+					b.WriteByte(value[i])
+					i++
+				}
+				i++
+				paramValue = b.String()
+			} else {
+				start := i
+				for i < len(value) && isTokenChar(value[i]) {
+					i++
+				}
+				paramValue = value[start:i]
+			}
+			key := strings.ToLower(name)
+			if _, seen := params[key]; inBearer && !seen {
+				params[key] = paramValue
+			}
+		}
+	}
+	return params
+}
+
+func isTokenChar(c byte) bool {
+	if c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' {
+		return true
+	}
+	return strings.IndexByte("!#$%&'*+-.^_`|~", c) >= 0
+}

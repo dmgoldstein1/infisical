@@ -617,3 +617,51 @@ func TestProxyLimitsMemoryForBodiesItHashes(t *testing.T) {
 		t.Fatalf("AWS rejected the signature: %v", got.err)
 	}
 }
+
+func TestLoggedHeadersDropsCredentials(t *testing.T) {
+	in := http.Header{
+		"Authorization":          {"AWS4-HMAC-SHA256 Credential=AKID"},
+		"X-Amz-Security-Token":   {"session-token"},
+		"Proxy-Authorization":    {"Bearer x"},
+		"Cookie":                 {"sess=abc"},
+		"Set-Cookie":             {"sess=abc"},
+		"Content-Type":           {"application/json"},
+		"X-Amz-Target":           {"DynamoDB_20120810.DescribeTable"},
+		"X-Amz-Sso_bearer_token": {"sso"},
+	}
+	got := loggedHeaders(in)
+	for _, name := range credentialHeaders {
+		if v := got.Get(name); v != "" {
+			t.Errorf("logged header %q = %q, want redacted", name, v)
+		}
+	}
+	if got.Get("Content-Type") != "application/json" || got.Get("X-Amz-Target") != "DynamoDB_20120810.DescribeTable" {
+		t.Errorf("non-credential headers lost: %v", got)
+	}
+	if in.Get("Authorization") == "" {
+		t.Error("loggedHeaders mutated the caller's header map")
+	}
+}
+
+func TestProxyRefusesNonAWSEndpoints(t *testing.T) {
+	server, _ := fakeAWS(t)
+	conn, _, _ := startProxy(t, server)
+
+	if _, err := io.WriteString(conn, "CONNECT evil.com:443 HTTP/1.1\r\nHost: evil.com:443\r\n\r\n"); err != nil {
+		t.Fatal(err)
+	}
+	resp, err := http.ReadResponse(bufio.NewReader(conn), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode == http.StatusOK {
+		t.Fatal("CONNECT to a non-AWS host was established")
+	}
+
+	conn2, pool2, _ := startProxy(t, server)
+	tlsConn := connect(t, conn2, pool2, "sts.amazonaws.com")
+	evil, _ := http.NewRequest(http.MethodGet, "https://evil.com/", nil)
+	if resp := roundTrip(t, tlsConn, bufio.NewReader(tlsConn), evil); resp.StatusCode == http.StatusOK {
+		t.Fatal("plain-proxy request to a non-AWS host was forwarded")
+	}
+}

@@ -880,3 +880,13 @@ func TestANativeConnectionAsksTheHookWhateverItsNarrowing(t *testing.T) {
 		})
 	}
 }
+
+func TestNativeTLSConfigHonoursTheVerifyOptOut(t *testing.T) {
+	cfg, err := nativeTLSConfig(nativeTarget{host: "db.internal", tlsEnabled: true, tlsVerify: false})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.InsecureSkipVerify {
+		t.Fatal("tlsVerify=false must skip verification (explicit operator opt-out), not fail closed")
+	}
+}

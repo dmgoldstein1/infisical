@@ -61,13 +61,7 @@ func LoginGatewayWithGcp(ctx context.Context, httpClient *resty.Client, gatewayI
 }
 
 func fetchGcpIdentityToken(ctx context.Context, audience string) (string, error) {
-	// Route through the shared constructor so metadata reads get the standard
-	// retry policy (TestNoDirectRestyConstruction enforces this).
-	httpClient, err := util.GetRestyClientWithPolicy(util.DefaultRetryPolicy())
-	if err != nil {
-		return "", fmt.Errorf("unable to build HTTP client for the GCP metadata server: %w", err)
-	}
-	res, err := httpClient.
+	res, err := util.GetRestyClientWithoutCustomHeaders(util.DefaultRetryPolicy()).
 		SetTimeout(gcpMetadataTimeout).
 		R().
 		SetContext(ctx).
@@ -155,11 +149,7 @@ func resolveGcpServiceAccountEmail(ctx context.Context, serviceAccountKeyPath st
 		return key.ClientEmail, nil
 	}
 
-	httpClient, err := util.GetRestyClientWithPolicy(util.DefaultRetryPolicy())
-	if err != nil {
-		return "", fmt.Errorf("unable to build HTTP client for the GCP metadata server: %w", err)
-	}
-	res, err := httpClient.
+	res, err := util.GetRestyClientWithoutCustomHeaders(util.DefaultRetryPolicy()).
 		SetTimeout(gcpMetadataTimeout).
 		R().
 		SetContext(ctx).

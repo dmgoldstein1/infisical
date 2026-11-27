@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -42,6 +43,22 @@ type KubernetesProxy struct {
 
 func NewKubernetesProxy(config KubernetesProxyConfig) *KubernetesProxy {
 	return &KubernetesProxy{config: config}
+}
+
+// credentialHeaders are never written to session audit logs: the session log
+// is an audit trail of what was proxied, not a vault for the credentials that
+// did it. Mirrors the AWS proxy's loggedHeaders redaction.
+var credentialHeaders = []string{
+	"Authorization", "Proxy-Authorization", "Cookie", "Set-Cookie",
+	"X-Amz-Security-Token", "X-Amz-Sso_bearer_token", "X-Api-Key",
+}
+
+func loggedHeaders(header http.Header) http.Header {
+	logged := header.Clone()
+	for _, name := range credentialHeaders {
+		logged.Del(name)
+	}
+	return logged
 }
 
 // injectAuthHeaders sets the appropriate auth headers based on the configured auth method.
@@ -85,41 +102,12 @@ func (p *KubernetesProxy) injectAuthHeaders(headers http.Header) error {
 	return nil
 }
 
-// redactedLogHeaders returns a copy of h with credential-bearing header values
-// replaced, so audit logs never persist secrets (e.g. Authorization bearer
-// tokens, impersonation headers) in clear text. The proxied request itself is
-// forwarded unmodified.
-func redactedLogHeaders(h http.Header) http.Header {
-	if len(h) == 0 {
-		return h
-	}
-	out := make(http.Header, len(h))
-	for k, v := range h {
-		switch strings.ToLower(k) {
-		case "authorization", "proxy-authorization", "cookie", "set-cookie",
-			"impersonate-user", "impersonate-group", "impersonate-uid":
-			red := make([]string, len(v))
-			for i := range v {
-				red[i] = "[redacted]"
-			}
-			out[k] = red
-		default:
-			if strings.HasPrefix(strings.ToLower(k), "impersonate-extra-") {
-				red := make([]string, len(v))
-				for i := range v {
-					red[i] = "[redacted]"
-				}
-				out[k] = red
-				continue
-			}
-			out[k] = v
-		}
-	}
-	return out
-}
-
 func buildHttpInternalServerError(message string) string {
-	return fmt.Sprintf("HTTP/1.1 500 Internal Server Error\r\nContent-Type: application/json\r\n\r\n{\"message\": \"gateway: %s\"}", message)
+	body, err := json.Marshal(map[string]string{"message": "gateway: " + message})
+	if err != nil {
+		body = []byte(`{"message": "gateway: internal error"}`)
+	}
+	return "HTTP/1.1 500 Internal Server Error\r\nContent-Type: application/json\r\n\r\n" + string(body)
 }
 
 func (p *KubernetesProxy) HandleConnection(ctx context.Context, clientConn net.Conn) error {
@@ -196,23 +184,16 @@ func (p *KubernetesProxy) HandleConnection(ctx context.Context, clientConn net.C
 			}
 			return err
 		}
-		// Cap what reaches the audit log at 1 MiB like the azure/gcp proxies; the
-		// forwarded request still carries the full body.
-		const maxLogBodySize = 1 << 20
-		loggedReqBody := reqBody
-		if len(loggedReqBody) > maxLogBodySize {
-			loggedReqBody = loggedReqBody[:maxLogBodySize]
-		}
 		err = p.config.SessionLogger.LogHttpEvent(session.HttpEvent{
 			Timestamp: time.Now(),
 			RequestId: requestId.String(),
 			EventType: session.HttpEventRequest,
 			URL:       req.URL.String(),
 			Method:    req.Method,
-			// Defense in depth: EncryptedSessionLogger also redacts, but the
-			// header map handed to the audit log must not carry credentials.
-			Headers: redactedLogHeaders(req.Header),
-			Body:    loggedReqBody,
+			// Credential headers are redacted: the session log is an audit
+			// trail of what was proxied, not a vault for the credentials.
+			Headers: loggedHeaders(req.Header),
+			Body:    reqBody,
 		})
 		if err != nil {
 			l.Error().Err(err).Msg("Failed to log HTTP request event")
@@ -301,7 +282,7 @@ func (p *KubernetesProxy) HandleConnection(ctx context.Context, clientConn net.C
 			EventType: session.HttpEventResponse,
 			Status:    resp.Status,
 			// TODO: remove sensitive stuff
-			Headers: resp.Header,
+			Headers: loggedHeaders(resp.Header),
 			// TODO: well... this might be really really big for the case of `kubectl cp` or `kubectl logs`
 			// 		 instead of writing the data into a big chunk mem blob,
 			//		 we should break it down into smaller fixed size chunks and flush as resp event with seq numbers

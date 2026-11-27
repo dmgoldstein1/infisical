@@ -137,8 +137,6 @@ type GetProjectByIdResponse struct {
 	Project Project `json:"workspace"`
 }
 
-type GetProjectBySlugResponse Project
-
 type PkiApplication struct {
 	ID   string `json:"id"`
 	Name string `json:"name"`
@@ -263,6 +261,72 @@ type CreateProjectRequest struct {
 
 type CreateProjectResponse struct {
 	Project ProjectDetails `json:"project"`
+}
+
+// ProjectSettings adds what a delete has to respect to ProjectDetails. It is a separate type so
+// `projects get -o json` keeps its shape.
+type ProjectSettings struct {
+	ProjectDetails
+	HasDeleteProtection bool `json:"hasDeleteProtection"`
+}
+
+// UpdateProjectRequest sends only the fields that are set. An empty Description clears it.
+type UpdateProjectRequest struct {
+	Name        *string `json:"name,omitempty"`
+	Description *string `json:"description,omitempty"`
+	Slug        *string `json:"slug,omitempty"`
+}
+
+type UpdateProjectResponse struct {
+	Project ProjectDetails `json:"project"`
+}
+
+type DeleteProjectResponse struct {
+	Project ProjectDetails `json:"project"`
+}
+
+// Environment is a project environment as the /v1/projects/:projectId/environments endpoints return
+// it. DeleteAfter is set once it is soft-deleted, and is when it will be permanently deleted.
+type Environment struct {
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	Slug        string `json:"slug"`
+	Position    int    `json:"position,omitempty"`
+	ProjectID   string `json:"projectId"`
+	DeleteAfter string `json:"deleteAfter,omitempty"`
+}
+
+type EnvironmentResponse struct {
+	Environment Environment `json:"environment"`
+}
+
+type DeletedEnvironment struct {
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	Slug        string `json:"slug"`
+	DeleteAfter string `json:"deleteAfter"`
+}
+
+// ProjectEnvironments is a project with its active environments, in position order, and the ones
+// pending deletion. It is decoded from the same response as ProjectDetails, which leaves out
+// deletedEnvironments so `projects get -o json` keeps its shape.
+type ProjectEnvironments struct {
+	ProjectDetails
+	DeletedEnvironments []DeletedEnvironment `json:"deletedEnvironments"`
+}
+
+type GetProjectEnvironmentsResponse struct {
+	Project ProjectEnvironments `json:"project"`
+}
+
+type CreateEnvironmentRequest struct {
+	Name string `json:"name"`
+	Slug string `json:"slug"`
+}
+
+type UpdateEnvironmentRequest struct {
+	Name *string `json:"name,omitempty"`
+	Slug *string `json:"slug,omitempty"`
 }
 
 type RawSecret struct {
@@ -407,6 +471,47 @@ type GetEncryptedSecretsV3Request struct {
 	SecretPath    string `json:"secretPath"`
 	IncludeImport bool   `json:"include_imports"`
 	Recursive     bool   `json:"recursive"`
+}
+
+type Folder struct {
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	Description string `json:"description,omitempty"`
+	CreatedAt   string `json:"createdAt,omitempty"`
+	UpdatedAt   string `json:"updatedAt,omitempty"`
+}
+
+type ListFoldersResponse struct {
+	Folders []Folder `json:"folders"`
+}
+
+type FolderResponse struct {
+	Folder Folder `json:"folder"`
+}
+
+type CreateFolderRequest struct {
+	ProjectID   string  `json:"projectId"`
+	Environment string  `json:"environment"`
+	Name        string  `json:"name"`
+	Path        string  `json:"path"`
+	Description *string `json:"description,omitempty"`
+}
+
+// UpdateFolderRequest always carries a name, which the route requires even when only the description
+// changes. A nil Description leaves it as it is.
+type UpdateFolderRequest struct {
+	ProjectID   string  `json:"projectId"`
+	Environment string  `json:"environment"`
+	Name        string  `json:"name"`
+	Path        string  `json:"path"`
+	Description *string `json:"description,omitempty"`
+}
+
+type DeleteFolderRequest struct {
+	ProjectID   string `json:"projectId"`
+	Environment string `json:"environment"`
+	Path        string `json:"path"`
+	ForceDelete bool   `json:"forceDelete"`
 }
 
 type GetFoldersV1Request struct {
@@ -775,6 +880,7 @@ type BootstrapInstanceRequest struct {
 	Password     string `json:"password"`
 	Organization string `json:"organization"`
 	Domain       string `json:"domain"`
+	SetupToken   string `json:"setupToken,omitempty"`
 }
 
 type BootstrapInstanceResponse struct {
@@ -951,6 +1057,7 @@ type PAMAccessApprovalRequestResponse struct {
 		ID        string `json:"id"`
 		ProjectId string `json:"projectId"`
 		OrgId     string `json:"organizationId"`
+		Status    string `json:"status"`
 	} `json:"request"`
 }
 
@@ -965,23 +1072,25 @@ type PAMCreateAccessRequestResponse struct {
 		ID        string `json:"id"`
 		ProjectId string `json:"projectId"`
 		OrgId     string `json:"organizationId"`
+		Status    string `json:"status"`
 	} `json:"request"`
 }
 
 // PAMAccessibleAccount is one entry from the accessible-accounts listing. It carries everything
 // needed to decide whether a session could be launched, without creating one.
 type PAMAccessibleAccount struct {
-	Id               string  `json:"id"`
-	Name             string  `json:"name"`
-	Description      string  `json:"description"`
-	FolderName       string  `json:"folderName"`
-	AccountType      string  `json:"accountType"`
-	CanLaunch        bool    `json:"canLaunch"`
-	RequiresApproval bool    `json:"requiresApproval"`
-	RequireReason    bool    `json:"requireReason"`
-	RequireMfa       bool    `json:"requireMfa"`
-	AccessStatus     string  `json:"accessStatus"` // none | pending | granted
-	DisabledReason   *string `json:"disabledReason"`
+	Id               string     `json:"id"`
+	Name             string     `json:"name"`
+	Description      string     `json:"description"`
+	FolderName       string     `json:"folderName"`
+	AccountType      string     `json:"accountType"`
+	CanLaunch        bool       `json:"canLaunch"`
+	RequiresApproval bool       `json:"requiresApproval"`
+	RequireReason    bool       `json:"requireReason"`
+	RequireMfa       bool       `json:"requireMfa"`
+	AccessStatus     string     `json:"accessStatus"` // none | pending | granted
+	GrantExpiresAt   *time.Time `json:"grantExpiresAt"`
+	DisabledReason   *string    `json:"disabledReason"`
 }
 
 type PAMAccessibleAccountsResponse struct {
@@ -999,8 +1108,15 @@ type PAMSessionLogMaskingConfig struct {
 	BuiltInDetection bool     `json:"builtInDetection"`
 }
 
+type PAMOutputMaskingConfig struct {
+	Patterns           []string `json:"patterns"`
+	AccountCredentials bool     `json:"accountCredentials"`
+	CreditCards        bool     `json:"creditCards"`
+}
+
 type PAMPolicyRules struct {
 	CommandBlocking   *PAMPolicyRuleConfig        `json:"command-blocking,omitempty"`
+	OutputMasking     *PAMOutputMaskingConfig     `json:"output-masking,omitempty"`
 	SessionLogMasking *PAMSessionLogMaskingConfig `json:"session-log-masking,omitempty"`
 }
 
@@ -1073,6 +1189,10 @@ type PAMSessionCredentials struct {
 	Schema                string            `json:"schema,omitempty"`
 	Role                  string            `json:"role,omitempty"`
 	PrivateKeyPassphrase  string            `json:"privateKeyPassphrase,omitempty"`
+	AccessKeyId           string            `json:"accessKeyId,omitempty"`
+	SecretAccessKey       string            `json:"secretAccessKey,omitempty"`
+	SessionToken          string            `json:"sessionToken,omitempty"`
+	ExpiresAt             string            `json:"expiresAt,omitempty"`
 }
 
 type MFASessionStatus string

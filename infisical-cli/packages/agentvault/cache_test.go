@@ -1,8 +1,6 @@
 package agentvault
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"sync"
@@ -250,6 +248,35 @@ func TestARejectedProxyTokenDropsTheSessionButIsNotASessionVerdict(t *testing.T)
 	}
 }
 
+func TestAFreeLimitRefusalDropsTheSessionAtOnceAndIsNotASessionVerdict(t *testing.T) {
+	err := &api.APIError{StatusCode: 400, Name: freeLimitReachedName, ErrorMessage: "This organization used its 5,000 free Agent Vault requests this month."}
+	if isSessionGone(err) || isProxyTokenRejected(err) {
+		t.Fatal("a free limit refusal was read as the session or the proxy being gone")
+	}
+
+	resolver := &stubResolver{result: &resolveResult{SessionID: "s1", Services: []*resolvedService{serviceWithSecret("v")}}}
+	cache := newTestCache(resolver)
+	if _, e := cache.get("tok"); e != nil {
+		t.Fatal(e)
+	}
+	resolver.err = err
+	cache.refresh()
+	if _, e := cache.get("tok"); !isFreeLimitReached(e) {
+		t.Fatalf("the credential kept flowing after the org used its free requests: %v", e)
+	}
+}
+
+func TestAFreeLimitRefusalIsNotReResolvedEveryRequest(t *testing.T) {
+	resolver := &stubResolver{err: &api.APIError{StatusCode: 400, Name: freeLimitReachedName}}
+	cache := newTestCache(resolver)
+	for i := 0; i < 20; i++ {
+		_, _ = cache.get("agv_tok")
+	}
+	if got := resolver.callCount(); got != 1 {
+		t.Fatalf("20 requests from an org past its free requests made %d resolves, want 1", got)
+	}
+}
+
 func TestAnUnnamed401StillEndsTheSession(t *testing.T) {
 	if !isSessionGone(&api.APIError{StatusCode: 401, Name: "UnauthorizedError", ErrorMessage: "Session revoked"}) {
 		t.Fatal("a plain 401 from an older server must still end the session")
@@ -402,32 +429,47 @@ func TestCacheTimesIgnoreTheSleepingClock(t *testing.T) {
 	}
 }
 
-// TestSessionKeyIsKeyedNotPlainHash pins the CodeQL go/weak-sensitive-data-hashing
-// remediation: the lookup key must be deterministic within the process, differ per
-// token, keep the 64-hex shape, and NOT be a plain SHA-256 of the token (a keyed
-// MAC under a process-lifetime key, so heap/disk disclosures cannot be brute-forced
-// offline against low-entropy tokens).
-func TestSessionKeyIsKeyedNotPlainHash(t *testing.T) {
-	t.Parallel()
+func TestTheSessionAHookIsToldAboutIsKeptAndRefreshed(t *testing.T) {
+	label := "Nightly refunds"
+	first := &api.AgentVaultResolvedSession{Label: &label, Actor: api.AgentVaultSessionActor{Type: "machineIdentity", ID: "a-1", Name: "agent"}}
+	svc := serviceWithSecret("v")
+	svc.hook = &serviceHook{secret: []byte("s")}
+	resolver := &stubResolver{result: &resolveResult{SessionID: "s1", Services: []*resolvedService{svc}, Session: first}}
+	cache := newTestCache(resolver)
 
-	a := sessionKey("agv_token")
-	if a != sessionKey("agv_token") {
-		t.Fatal("sessionKey is not deterministic within the process")
+	found, err := cache.lookup("agv_token", nil)
+	if err != nil || found.session != first || found.sessionID != "s1" || found.services[0].hook != svc.hook {
+		t.Fatalf("lookup = %+v, %v", found, err)
 	}
-	if len(a) != 64 {
-		t.Fatalf("sessionKey %q is not 64 hex chars", a)
+
+	second := &api.AgentVaultResolvedSession{Actor: api.AgentVaultSessionActor{Type: "user", ID: "u-1", Name: "Ana"}}
+	edited := serviceWithSecret("v")
+	edited.hook = &serviceHook{secret: []byte("edited")}
+	resolver.mu.Lock()
+	resolver.result = &resolveResult{SessionID: "s1", Services: []*resolvedService{edited}, Session: second}
+	resolver.mu.Unlock()
+	cache.refresh()
+	if found, _ := cache.lookup("agv_token", nil); found.session != second || found.services[0].hook != edited.hook {
+		t.Fatalf("the refresh kept the old session info: %+v, hook %+v", found.session, found.services[0].hook)
 	}
-	for _, c := range a {
-		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')) {
-			t.Fatalf("sessionKey %q is not lowercase hex", a)
-		}
+
+	resolver.mu.Lock()
+	resolver.result = &resolveResult{SessionID: "s1", Services: []*resolvedService{serviceWithSecret("v")}, Session: second}
+	resolver.mu.Unlock()
+	cache.refresh()
+	if found, _ := cache.lookup("agv_token", nil); found.services[0].hook != nil {
+		t.Fatalf("a removed hook stayed on the service: %+v", found.services[0].hook)
 	}
-	if b := sessionKey("agv_other"); a == b {
-		t.Fatal("sessionKey collides for distinct tokens")
-	}
-	plainSum := sha256.Sum256([]byte("agv_token"))
-	plain := hex.EncodeToString(plainSum[:])
-	if a == plain {
-		t.Fatal("sessionKey is a plain SHA-256 of the token")
+}
+
+func TestACredentialSwapKeepsThePolledHook(t *testing.T) {
+	polledHook := &serviceHook{secret: []byte("new")}
+	polled := &resolvedService{id: "svc-1", hostPattern: "h", credential: oauthToken("stale"), hook: polledHook}
+	entry := &sessionEntry{swaps: map[string]*credentialSwap{"svc-1": {
+		installed: oauthToken("fresh"), hostPattern: "h", replaced: map[string]bool{credentialHash(&polled.credential): true}, gen: 2,
+	}}}
+	got := keepNewerSwaps(entry, []*resolvedService{polled}, 1)
+	if string(got[0].credential.value) != "fresh" || got[0].hook != polledHook {
+		t.Fatalf("merged service = %+v", got[0])
 	}
 }

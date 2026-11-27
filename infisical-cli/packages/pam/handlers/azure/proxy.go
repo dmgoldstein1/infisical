@@ -60,6 +60,22 @@ func (lw *limitedWriter) Write(p []byte) (int, error) {
 	return n, err
 }
 
+// credentialHeaders are never written to session audit logs: the session log
+// is an audit trail of what was proxied, not a vault for the credentials that
+// did it. Mirrors the AWS proxy's loggedHeaders redaction.
+var credentialHeaders = []string{
+	"Authorization", "Proxy-Authorization", "Cookie", "Set-Cookie",
+	"X-Amz-Security-Token", "X-Amz-Sso_bearer_token", "X-Api-Key",
+}
+
+func loggedHeaders(header http.Header) http.Header {
+	logged := header.Clone()
+	for _, name := range credentialHeaders {
+		logged.Del(name)
+	}
+	return logged
+}
+
 func NewAzureProxy(config AzureProxyConfig) *AzureProxy {
 	return &AzureProxy{config: config}
 }
@@ -283,29 +299,6 @@ func (p *AzureProxy) handleRequest(_ context.Context, writer io.Writer, req *htt
 	return p.forward(writer, req, client, l, token, isVaultHost(hostname), requestId)
 }
 
-// redactedLogHeaders returns a copy of h with credential-bearing header values
-// replaced, so audit logs never persist secrets (e.g. Authorization bearer
-// tokens) in clear text. The proxied request itself is forwarded unmodified.
-func redactedLogHeaders(h http.Header) http.Header {
-	if len(h) == 0 {
-		return h
-	}
-	out := make(http.Header, len(h))
-	for k, v := range h {
-		switch strings.ToLower(k) {
-		case "authorization", "proxy-authorization", "cookie", "set-cookie":
-			red := make([]string, len(v))
-			for i := range v {
-				red[i] = "[redacted]"
-			}
-			out[k] = red
-		default:
-			out[k] = v
-		}
-	}
-	return out
-}
-
 func (p *AzureProxy) forward(writer io.Writer, req *http.Request, client *http.Client, l zerolog.Logger, injectToken string, redactBody bool, requestId uuid.UUID) error {
 	const maxLogBodySize = 1 << 20 // 1 MiB cap for audit-logged bodies
 	redactedMarker := []byte("[redacted: Key Vault body]")
@@ -333,7 +326,7 @@ func (p *AzureProxy) forward(writer io.Writer, req *http.Request, client *http.C
 			EventType: session.HttpEventRequest,
 			URL:       req.URL.String(),
 			Method:    req.Method,
-			Headers:   redactedLogHeaders(req.Header),
+			Headers:   loggedHeaders(req.Header),
 			Body:      loggedReqBody,
 		}); err != nil {
 			l.Error().Err(err).Msg("Failed to log HTTP request event")
@@ -410,7 +403,7 @@ func (p *AzureProxy) forward(writer io.Writer, req *http.Request, client *http.C
 			RequestId: requestId.String(),
 			EventType: session.HttpEventResponse,
 			Status:    resp.Status,
-			Headers:   resp.Header,
+			Headers:   loggedHeaders(resp.Header),
 			Body:      respBody,
 		}); err != nil {
 			l.Error().Err(err).Msg("Failed to log HTTP response event")

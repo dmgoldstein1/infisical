@@ -429,15 +429,12 @@ func extractDataPayload(pkt []byte) ([]byte, error) {
 
 const maxAuthRequestUserKVPGap = 8
 
-// Oracle identifiers are at most 128 bytes; bounding the replacement keeps
-// the rewrite allocations below from overflowing on hostile input.
-const maxOracleRewriteNameLen = 128
-
-// ReadFullPacket already refuses TNS packets larger than 1<<22 bytes, so a
-// rewrite input larger than that never arrives from the wire. Reject it here
-// as well so the len(payload)+N allocations below stay bounded even if a
-// caller ever passes an unframed buffer.
-const maxOracleRewritePayloadLen = 1 << 22
+// Allocation bounds for the packet rewriters below. TTC data packets are small
+// (bounded by the length-prefixed framing the reader already enforces) and
+// Oracle identifiers are at most dozens of bytes; anything near these caps is a
+// corrupt packet or a caller bug, so fail rather than size an allocation from it.
+const maxOracleRewritePacketBytes = 1 << 20
+const maxOracleRewriteNameBytes = 1024
 
 func phaseTwoAccepted(raw []byte, use32BitLen bool) bool {
 	if PacketTypeOf(raw) != PacketTypeData {
@@ -462,12 +459,6 @@ func rewriteAuthRequestUser(payload []byte, expectedSubOp byte, newUser string) 
 }
 
 func rewriteAuthRequestUserWithFraming(payload []byte, expectedSubOp byte, newUser string, consumeExtraFraming bool) ([]byte, error) {
-	if len(newUser) == 0 || len(newUser) > maxOracleRewriteNameLen {
-		return nil, fmt.Errorf("auth request username has invalid length %d", len(newUser))
-	}
-	if len(payload) > maxOracleRewritePayloadLen {
-		return nil, fmt.Errorf("auth request payload too large: %d", len(payload))
-	}
 	r := NewTTCReader(payload)
 	op, err := r.GetByte()
 	if err != nil {
@@ -557,6 +548,12 @@ func rewriteAuthRequestUserWithFraming(payload []byte, expectedSubOp byte, newUs
 
 	newUserBytes := []byte(newUser)
 	newUserLen := len(newUserBytes)
+	if len(payload) > maxOracleRewritePacketBytes {
+		return nil, fmt.Errorf("auth request packet too large: %d", len(payload))
+	}
+	if newUserLen > maxOracleRewriteNameBytes {
+		return nil, fmt.Errorf("auth request username too long: %d", newUserLen)
+	}
 
 	out := make([]byte, 0, len(payload)+16)
 	out = append(out, payload[:hasUserPos]...)
@@ -574,10 +571,8 @@ func rewriteAuthRequestUserWithFraming(payload []byte, expectedSubOp byte, newUs
 }
 
 func rewriteConnectServiceName(pkt []byte, newName string) []byte {
-	if len(newName) == 0 || len(newName) > maxOracleRewriteNameLen {
-		return pkt
-	}
-	if len(pkt) > maxOracleRewritePayloadLen {
+	// Bound the allocation below: fail safe (no rewrite) on absurd sizes.
+	if len(pkt) > maxOracleRewritePacketBytes || len(newName) > maxOracleRewriteNameBytes {
 		return pkt
 	}
 	marker := []byte("SERVICE_NAME=")

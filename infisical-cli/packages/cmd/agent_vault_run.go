@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"cmp"
+	"context"
 	"crypto/x509"
 	"encoding/json"
 	"encoding/pem"
@@ -13,19 +14,24 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"regexp"
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
+	"syscall"
 	"time"
 
 	"github.com/Infisical/infisical-merge/packages/agentvault"
 	"github.com/Infisical/infisical-merge/packages/api"
+	"github.com/Infisical/infisical-merge/packages/config"
 	"github.com/Infisical/infisical-merge/packages/sandbox"
 	"github.com/Infisical/infisical-merge/packages/telemetry"
 	"github.com/Infisical/infisical-merge/packages/util"
 	"github.com/fatih/color"
+	"github.com/go-resty/resty/v2"
 	"github.com/google/uuid"
 	"github.com/mattn/go-isatty"
 	"github.com/posthog/posthog-go"
@@ -35,6 +41,11 @@ import (
 // The server validates names as slugs; matching that here keeps a typo a one-line message instead of a raw
 // 422 body, which is all the CLI can print for a schema rejection.
 var agentVaultBundleNameRe = regexp.MustCompile(`^[a-z0-9-]{1,64}$`)
+
+// Allocation bound for withAgentVaultConnectEnv: entries come from os.Environ,
+// which the OS caps near ARG_MAX, so this is unreachable in practice and only
+// bounds the make() below against a hostile caller-supplied slice.
+const maxAgentVaultEnvEntries = 1 << 20
 
 // One file per proxy, so a run against a second proxy cannot overwrite the certificate an agent that is
 // already running still trusts through its environment. The ID comes from the proxy over unauthenticated
@@ -57,6 +68,13 @@ var agentVaultProxyHTTPClient = &http.Client{
 // The endpoint is unauthenticated plain HTTP, so whatever answers at that address is bounded before
 // it is read. A certificate and three short fields are a couple of kilobytes.
 const agentVaultCaResponseLimit = 1 << 20
+
+// Bound the revoke, which otherwise waits on retries against an unreachable Infisical. An operator who
+// interrupted the run is waiting at the terminal, so that revoke gives up sooner.
+const (
+	agentVaultInterruptRevokeTimeout = 10 * time.Second
+	agentVaultExitRevokeTimeout      = 30 * time.Second
+)
 
 type agentVaultProxyCa struct {
 	ProxyID     string `json:"proxyId"`
@@ -101,7 +119,9 @@ Two ways to get a session, exactly one of them required:
 
   --access-bundle   mint one now over the named bundle, or set INFISICAL_AGENT_VAULT_ACCESS_BUNDLE
                     (needs your login or a machine identity). Revoked when the agent exits unless
-                    --keep-session is set.
+                    --keep-session is set. The bundle is looked up in the Agent Vault project from
+                    --project-id, or else INFISICAL_AGENT_VAULT_PROJECT_ID or INFISICAL_PROJECT_ID,
+                    in that order.
   --session-token   run with a session token minted in the dashboard, or set
                     INFISICAL_AGENT_VAULT_SESSION_TOKEN. Never revoked by this command.
 
@@ -110,6 +130,25 @@ neither flag is passed, the run stops and asks which you meant.
 
 The proxy's certificate authority is fetched from the proxy on every run and trusted for the agent. Pass
 --ca-fingerprint to abort if the served certificate does not match the proxy's fingerprint from Infisical.
+
+The proxy says which Infisical it works with, and the agent gets that Infisical's URL in INFISICAL_AGENT_VAULT_URL.
+Through the proxy, the agent lists the services its session reaches at
+$INFISICAL_AGENT_VAULT_URL/api/v1/agent-vault/session/services, with no credential of its own.
+
+The session's skills (its access bundle's, the ones picked from the project and the ones
+sent with it), plus infisical-agent-vault, which tells the agent how to work behind the proxy,
+are fetched through the proxy and installed when the agent starts, into
+~/.agents/skills, where Codex, OpenCode and OpenClaw find them. A proxy too old to pass skills on is skipped and
+Infisical asked directly. Pass --no-agent-vault-skill to leave out infisical-agent-vault. If ~/.claude (or $CLAUDE_CONFIG_DIR) or
+~/.hermes (or $HERMES_HOME) exists, each skill is also linked into its skills folder for Claude Code or
+Hermes, and for Claude Code whenever the agent is claude. Pass --skills-dir to install them into another
+folder instead, with no links, or --no-skills to start without them. Installed skills stay after the agent
+exits, and folders of your own with a skill's name are left alone. Restart the agent to pick up changes to
+them. If they cannot be installed, the agent starts without them.
+
+When the agent is claude, the session's MCP servers that are ready are added to it with --mcp-config, on top of any
+you pass, each with a placeholder credential the proxy replaces, so Claude Code has their tools from the start. Pass
+--no-mcp-servers to leave them out.
 
 Unlike 'secrets agent-proxy run', this command does not sandbox the agent: it sets environment variables
 and starts the process.`,
@@ -183,7 +222,7 @@ func resolveAgentVaultAccessBundles(cmd *cobra.Command) (bundles []string, sourc
 			return nil, agentVaultSourceNone, err
 		}
 		if bundles = nonBlank(values); len(bundles) == 0 {
-			return nil, agentVaultSourceFlag, fmt.Errorf("--access-bundle was given but names no bundle; pass a name like 'coding-agent'")
+			return nil, agentVaultSourceFlag, errAgentVaultEmptyAccessBundle()
 		}
 		return bundles, agentVaultSourceFlag, nil
 	}
@@ -228,6 +267,78 @@ func agentVaultSourceName(source agentVaultSource, flagName, envName string) str
 	return flagName
 }
 
+// resolveAgentVaultSessionLabel returns the label to send when this command mints a session. A session token names
+// a session created in the dashboard, whose label is edited there, so --label alongside one is refused.
+func resolveAgentVaultSessionLabel(cmd *cobra.Command, sessionToken string, tokenSource agentVaultSource) (string, error) {
+	if sessionToken != "" && cmd.Flags().Changed("label") {
+		return "", fmt.Errorf(
+			"--label applies to a session this command mints; label the one behind %s in the dashboard. Drop --label, or mint here with --access-bundle",
+			agentVaultSourceName(tokenSource, "--session-token", agentVaultSessionTokenEnv))
+	}
+	label, _ := cmd.Flags().GetString("label")
+	return strings.TrimSpace(label), nil
+}
+
+// resolveAgentVaultSessionMetadata returns the metadata to send when this command mints a session, refusing
+// --metadata alongside a session token for the same reason as --label.
+func resolveAgentVaultSessionMetadata(cmd *cobra.Command, sessionToken string, tokenSource agentVaultSource) (map[string]string, error) {
+	if sessionToken != "" && cmd.Flags().Changed("metadata") {
+		return nil, fmt.Errorf(
+			"--metadata applies to a session this command mints; edit the metadata of the one behind %s in the dashboard. Drop --metadata, or mint here with --access-bundle",
+			agentVaultSourceName(tokenSource, "--session-token", agentVaultSessionTokenEnv))
+	}
+	values, _ := cmd.Flags().GetStringArray("metadata")
+	return parseAgentVaultSessionMetadata(values)
+}
+
+// parseAgentVaultSessionMetadata splits each value on its first "=", so a value may itself contain "=" and a key
+// can't. Other limits on keys and values are left to the server, which reports them.
+func parseAgentVaultSessionMetadata(values []string) (map[string]string, error) {
+	if len(values) == 0 {
+		return nil, nil
+	}
+	metadata := make(map[string]string, len(values))
+	for _, entry := range values {
+		key, value, found := strings.Cut(entry, "=")
+		key = strings.TrimSpace(key)
+		if !found || key == "" {
+			return nil, &util.CLIError{Code: errCodeInvalidFlagValue, Message: "--metadata takes key=value, such as --metadata runId=8812"}
+		}
+		if _, seen := metadata[key]; seen {
+			return nil, &util.CLIError{Code: errCodeInvalidFlagValue,
+				Message: fmt.Sprintf("--metadata sets %s more than once; pass each key once", quoted(key, "metadata key"))}
+		}
+		value = strings.TrimSpace(value)
+		if value == "" {
+			return nil, &util.CLIError{Code: errCodeInvalidFlagValue,
+				Message: "--metadata takes key=value with a non-empty value, such as --metadata runId=8812"}
+		}
+		metadata[key] = value
+	}
+	return metadata, nil
+}
+
+// None of these can reach a session minted in the dashboard: its expiry and project were fixed when it was
+// created, and this command never revokes it.
+func refuseAgentVaultMintOnlyFlags(cmd *cobra.Command, sessionToken string, tokenSource agentVaultSource) error {
+	if sessionToken == "" {
+		return nil
+	}
+	tokenName := agentVaultSourceName(tokenSource, "--session-token", agentVaultSessionTokenEnv)
+	switch {
+	case cmd.Flags().Changed("ttl"):
+		return fmt.Errorf(
+			"--ttl applies to a session this command mints; the one behind %s was given its lifetime in the dashboard. Drop --ttl, or mint here with --access-bundle", tokenName)
+	case cmd.Flags().Changed("keep-session"):
+		return fmt.Errorf(
+			"--keep-session applies to a session this command mints; the one behind %s is never revoked here. Drop --keep-session, or mint here with --access-bundle", tokenName)
+	case cmd.Flags().Changed("project-id"):
+		return fmt.Errorf(
+			"--project-id applies to a session this command mints; the one behind %s already belongs to a project. Drop --project-id, or mint here with --access-bundle", tokenName)
+	}
+	return nil
+}
+
 func runAgentVaultRun(cmd *cobra.Command, args []string) {
 	sessionToken, tokenSource, err := resolveAgentVaultSessionToken(cmd)
 	if err != nil {
@@ -255,28 +366,33 @@ func runAgentVaultRun(cmd *cobra.Command, args []string) {
 		tokenSource = agentVaultSourceNone
 	}
 
-	if len(accessBundles) > 1 {
-		util.HandleError(fmt.Errorf("a session carries one access bundle; pass --access-bundle once"))
+	if err := validateAgentVaultAccessBundles(accessBundles, bundleSource); err != nil {
+		util.HandleError(err)
 	}
-	for _, name := range accessBundles {
-		if !agentVaultBundleNameRe.MatchString(name) {
-			util.HandleError(fmt.Errorf("%q from %s is not an access bundle name; names are lowercase letters, numbers and hyphens, for example 'coding-agent'",
-				name, agentVaultSourceName(bundleSource, "--access-bundle", agentVaultAccessBundleEnv)))
-		}
+
+	skillsDir, noSkills, err := resolveAgentVaultRunSkills(cmd)
+	if err != nil {
+		util.HandleError(err)
 	}
 
 	ttl, _ := cmd.Flags().GetString("ttl")
+	label, err := resolveAgentVaultSessionLabel(cmd, sessionToken, tokenSource)
+	if err != nil {
+		util.HandleError(err)
+	}
+	metadata, err := resolveAgentVaultSessionMetadata(cmd, sessionToken, tokenSource)
+	if err != nil {
+		util.HandleError(err)
+	}
 
-	// Neither flag can reach a session minted in the dashboard: its expiry was fixed when it was created.
-	if sessionToken != "" {
-		tokenName := agentVaultSourceName(tokenSource, "--session-token", agentVaultSessionTokenEnv)
-		if cmd.Flags().Changed("ttl") {
-			util.HandleError(fmt.Errorf(
-				"--ttl applies to a session this command mints; the one behind %s was given its lifetime in the dashboard. Drop --ttl, or mint here with --access-bundle", tokenName))
-		}
-		if cmd.Flags().Changed("keep-session") {
-			util.HandleError(fmt.Errorf(
-				"--keep-session applies to a session this command mints; the one behind %s is never revoked here. Drop --keep-session, or mint here with --access-bundle", tokenName))
+	if err := refuseAgentVaultMintOnlyFlags(cmd, sessionToken, tokenSource); err != nil {
+		util.HandleError(err)
+	}
+
+	var project agentVaultProject
+	if len(accessBundles) > 0 {
+		if project, err = resolveAgentVaultProject(cmd); err != nil {
+			util.HandleError(err)
 		}
 	}
 
@@ -372,23 +488,13 @@ func runAgentVaultRun(cmd *cobra.Command, args []string) {
 	var minted *api.AgentVaultSession
 	if len(accessBundles) > 0 {
 		identity := resolveAgentVaultIdentityToken(cmd)
-		httpClient, clientErr := util.GetRestyClientWithCustomHeaders()
-		if clientErr != nil {
-			util.HandleError(clientErr, "Failed to build the API client")
-		}
-		httpClient.SetAuthToken(identity)
-
-		created, mintErr := api.CallCreateAgentVaultSession(httpClient, api.CreateAgentVaultSessionRequest{AccessBundles: accessBundles, TTL: ttl})
-		if mintErr != nil {
-			util.HandleError(mintErr, "Unable to mint an Agent Vault session")
-		}
-		minted = &created.Session
-		sessionToken = created.Session.Token
+		minted = mintAgentVaultSessionOrExit(identity, project, accessBundles, ttl, label, metadata)
+		sessionToken = minted.Token
 
 		Telemetry.SetActor(telemetry.IdentityClaimsFromToken(identity))
 	}
 
-	Telemetry.CaptureEvent("cli-command:agent-vault run", posthog.NewProperties().
+	Telemetry.CaptureEventAsync("cli-command:agent-vault run", posthog.NewProperties().
 		Set("version", util.CLI_VERSION).
 		Set("agent", telemetryAgentName(args)).
 		Set("platform", runtime.GOOS).
@@ -398,39 +504,226 @@ func runAgentVaultRun(cmd *cobra.Command, args []string) {
 		Set("pinned", pinnedFingerprint != "").
 		Set("caTrust", !noCaTrust))
 
-	env := buildAgentVaultRunEnv(os.Environ(), proxyAddr, sessionToken, caPath, extraNoProxy)
+	printAgentVaultRunSummary(proxyAddr, caResp, servedFingerprint, minted, project, tokenSource, bundleSource)
 
-	printAgentVaultRunSummary(proxyAddr, caResp, servedFingerprint, minted, tokenSource, bundleSource)
-
-	exitCode := runAgentVaultChild(args, env)
-
-	if minted != nil && !keepSession {
-		// Never resolve the identity the usual way here: a long run would exit on the expiry check, or open the
-		// login wizard on a terminal nobody is watching.
-		httpClient, clientErr := util.GetRestyClientWithCustomHeaders()
-		token, tokenErr := revocationToken(cmd)
-		switch {
-		case clientErr != nil || tokenErr != nil:
-			util.PrintWarning(fmt.Sprintf(
-				"The agent exited but its session could not be revoked (%v). Revoke it in Infisical.",
-				cmp.Or(clientErr, tokenErr)))
-		default:
-			httpClient.SetAuthToken(token)
-			if revokeErr := api.CallRevokeAgentVaultSession(httpClient, minted.ID); revokeErr != nil {
-				util.PrintWarning(fmt.Sprintf("The agent exited but its session could not be revoked (%v). Revoke it in Infisical.", revokeErr))
-			} else {
-				fmt.Fprintln(os.Stderr, color.HiBlackString("session revoked"))
+	noBuiltinSkill, _ := cmd.Flags().GetBool("no-agent-vault-skill")
+	noMCPServers, _ := cmd.Flags().GetBool("no-mcp-servers")
+	sessionClient := func(tunnel *agentVaultSkillsTunnel, proxyTooOld bool) (*agentVaultSkillsClient, error) {
+		httpClient, err := newAgentVaultSessionHTTPClient()
+		if err != nil {
+			return nil, err
+		}
+		return &agentVaultSkillsClient{
+			httpClient:        httpClient,
+			sessionToken:      sessionToken,
+			retryUnauthorized: minted != nil,
+			includeBuiltin:    !noBuiltinSkill,
+			tunnel:            tunnel,
+			proxyTooOld:       proxyTooOld,
+			beforeDirect: func() {
+				if minted == nil {
+					useAgentVaultSessionTokenDomain()
+				}
+			},
+		}, nil
+	}
+	var installSkills agentVaultRunProxyStep
+	if !noSkills {
+		installSkills = func(ctx context.Context, tunnel *agentVaultSkillsTunnel, proxyTooOld bool) {
+			skillsClient, clientErr := sessionClient(tunnel, proxyTooOld)
+			if clientErr != nil {
+				util.PrintWarning(fmt.Sprintf("Starting without skills: %v.", clientErr))
+				return
+			}
+			installAgentVaultRunSkills(ctx, skillsClient, agentvault.InstallOptions{Dir: skillsDir, ForceClaude: agentVaultRunStartsClaude(args)}, !noBuiltinSkill)
+		}
+	}
+	// Claude Code loads MCP servers only when it starts, so the session's are handed to it rather than left for the agent
+	// to find.
+	var mcpConfigPath string
+	removeMCPConfig := func() {}
+	var listMCPServers agentVaultRunProxyStep
+	if !noMCPServers && agentVaultRunStartsClaude(args) {
+		silent, _ := cmd.Flags().GetBool("silent")
+		bypassesProxy := agentVaultBypassesProxy(agentVaultRunNoProxy(os.Environ(), extraNoProxy))
+		listMCPServers = func(ctx context.Context, tunnel *agentVaultSkillsTunnel, proxyTooOld bool) {
+			servicesClient, clientErr := sessionClient(tunnel, proxyTooOld)
+			if clientErr != nil {
+				util.PrintWarning(fmt.Sprintf("Starting Claude Code without the session's MCP servers: %v.", clientErr))
+				return
+			}
+			if path, remove := agentVaultRunMCPConfig(ctx, servicesClient, bypassesProxy, silent, args[0]); path != "" {
+				mcpConfigPath, removeMCPConfig = path, remove
 			}
 		}
 	}
+	var agentAPIURL string
+	if exitCode, interrupted := runAgentVaultRunStartupStep(
+		func(ctx context.Context) {
+			agentAPIURL = prepareAgentVaultRunProxy(ctx, proxyAddr, sessionToken, caPEM, minted != nil, installSkills, listMCPServers)
+		},
+		func(ctx context.Context) {
+			revokeAgentVaultRunSession(ctx, cmd, minted, keepSession, "The run was interrupted", true)
+		}); interrupted {
+		removeMCPConfig()
+		os.Exit(exitCode)
+	}
+
+	if minted == nil {
+		useAgentVaultSessionTokenDomain()
+	}
+	env := withAgentVaultConnectEnv(
+		buildAgentVaultRunEnv(os.Environ(), proxyAddr, sessionToken, caPath, extraNoProxy, agentAPIURL),
+		proxyAddr, sessionToken, caPath, config.INFISICAL_URL, cmd.Flags().Changed("domain"))
+	if mcpConfigPath != "" {
+		args = withAgentVaultMCPConfig(args, mcpConfigPath)
+	}
+	exitCode := runAgentVaultChild(args, env)
+	removeMCPConfig()
+
+	revokeAgentVaultRunSession(context.Background(), cmd, minted, keepSession, "The agent exited", false)
 	os.Exit(exitCode)
 }
 
-func revocationToken(cmd *cobra.Command) (string, error) {
+// resolveAgentVaultRunSkills returns the folder to install the session's skills into, empty for
+// ~/.agents/skills, and whether --no-skills skips them.
+func resolveAgentVaultRunSkills(cmd *cobra.Command) (dir string, skip bool, err error) {
+	dir, _ = cmd.Flags().GetString("skills-dir")
+	if cmd.Flags().Changed("skills-dir") && strings.TrimSpace(dir) == "" {
+		return "", false, fmt.Errorf("--skills-dir was given but is empty; pass a folder, or drop the flag to install into ~/.agents/skills")
+	}
+	skip, _ = cmd.Flags().GetBool("no-skills")
+	if skip && cmd.Flags().Changed("skills-dir") {
+		return "", false, fmt.Errorf("--skills-dir was given with --no-skills, which installs no skills; drop one of the two")
+	}
+	if dir, err = expandAgentVaultHomeDir(dir); err != nil {
+		return "", false, err
+	}
+	return dir, skip, nil
+}
+
+// A quoted or flag=value path reaches us with its "~" unexpanded by the shell.
+func expandAgentVaultHomeDir(dir string) (string, error) {
+	if dir != "~" && !strings.HasPrefix(dir, "~/") && !strings.HasPrefix(dir, "~"+string(filepath.Separator)) {
+		return dir, nil
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("unable to expand ~ in --skills-dir: %w", err)
+	}
+	return filepath.Join(home, dir[1:]), nil
+}
+
+func agentVaultRunStartsClaude(args []string) bool {
+	switch telemetryAgentName(args) {
+	case "claude", "claude.exe", "claude.cmd", "claude.bat":
+		return true
+	}
+	return false
+}
+
+// runAgentVaultRunStartupStep runs prepare, which talks to the proxy and installs skills before the agent starts. The
+// signals are the ones the agent step forwards to the agent; when one interrupts the step, onInterrupt runs with a
+// context that a second signal cancels, and the step returns the exit code a shell reports for the last signal received.
+func runAgentVaultRunStartupStep(prepare func(context.Context), onInterrupt func(context.Context)) (exitCode int, interrupted bool) {
+	interruptCtx, abortCtx, stopSignals := notifyAgentVaultTerminationSignals()
+	interrupted = prepareAgentVaultRunStartup(interruptCtx, prepare, func() { onInterrupt(abortCtx) })
+	stopSignals()
+	if !interrupted {
+		return 0, false
+	}
+	for _, ctx := range []context.Context{abortCtx, interruptCtx} {
+		var received agentVaultReceivedSignal
+		if errors.As(context.Cause(ctx), &received) {
+			return agentVaultSignalExitCode(received.signal), true
+		}
+	}
+	return agentVaultSignalExitCode(os.Interrupt), true
+}
+
+type agentVaultReceivedSignal struct{ signal os.Signal }
+
+func (r agentVaultReceivedSignal) Error() string { return "received " + r.signal.String() }
+
+// notifyAgentVaultTerminationSignals cancels interruptCtx on the first termination signal and abortCtx on the
+// second. Signals stay caught until stop so that a second Ctrl-C during the revoke cuts it short with its warning
+// instead of killing the process silently; a third gets the default handling.
+func notifyAgentVaultTerminationSignals() (interruptCtx, abortCtx context.Context, stop func()) {
+	interruptCtx, cancelInterrupt := context.WithCancelCause(context.Background())
+	abortCtx, cancelAbort := context.WithCancelCause(context.Background())
+	sigCh := make(chan os.Signal, 2)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP, syscall.SIGQUIT)
+	done := make(chan struct{})
+	go func() {
+		for _, cancel := range []context.CancelCauseFunc{cancelInterrupt, cancelAbort} {
+			select {
+			case sig := <-sigCh:
+				cancel(agentVaultReceivedSignal{signal: sig})
+			case <-done:
+				return
+			}
+		}
+		signal.Stop(sigCh)
+	}()
+	var once sync.Once
+	return interruptCtx, abortCtx, func() {
+		once.Do(func() {
+			signal.Stop(sigCh)
+			close(done)
+		})
+	}
+}
+
+func agentVaultSignalExitCode(sig os.Signal) int {
+	if s, ok := sig.(syscall.Signal); ok {
+		return 128 + int(s)
+	}
+	return 128 + int(syscall.SIGINT)
+}
+
+func revokeAgentVaultRunSession(parent context.Context, cmd *cobra.Command, minted *api.AgentVaultSession, keepSession bool, event string, interrupted bool) {
+	if minted == nil || keepSession {
+		return
+	}
+	timeout, loginPolicy := agentVaultExitRevokeTimeout, util.DefaultRetryPolicy()
+	if interrupted {
+		timeout, loginPolicy = agentVaultInterruptRevokeTimeout, util.BestEffortRetryPolicy()
+	}
+	// Never resolve the identity the usual way here: a long run would exit on the expiry check, or open the
+	// login wizard on a terminal nobody is watching.
+	ctx, cancel := context.WithTimeout(parent, timeout)
+	defer cancel()
+	httpClient, clientErr := util.GetRestyClientWithCustomHeaders()
+	token, tokenErr := revocationToken(ctx, cmd, loginPolicy)
+	switch {
+	case clientErr != nil || tokenErr != nil:
+		util.PrintWarning(fmt.Sprintf(
+			"%s but its session could not be revoked (%v). Revoke it in Infisical.",
+			event, cmp.Or(clientErr, tokenErr)))
+	default:
+		httpClient.SetAuthToken(token)
+		if revokeErr := api.CallRevokeAgentVaultSession(ctx, httpClient, minted.ID); revokeErr != nil {
+			util.PrintWarning(fmt.Sprintf("%s but its session could not be revoked (%v). Revoke it in Infisical.", event, revokeErr))
+		} else {
+			fmt.Fprintln(os.Stderr, color.HiBlackString("session revoked"))
+		}
+	}
+}
+
+func revocationToken(ctx context.Context, cmd *cobra.Command, loginPolicy util.RetryPolicy) (string, error) {
 	clientID, _ := util.GetCmdFlagOrEnvWithDefaultValue(cmd, "client-id", []string{util.INFISICAL_UNIVERSAL_AUTH_CLIENT_ID_NAME}, "")
 	clientSecret, _ := util.GetCmdFlagOrEnvWithDefaultValue(cmd, "client-secret", []string{util.INFISICAL_UNIVERSAL_AUTH_CLIENT_SECRET_NAME}, "")
 	if clientID != "" && clientSecret != "" {
-		loginResp, err := util.UniversalAuthLogin(clientID, clientSecret)
+		httpClient, err := util.GetRestyClientWithPolicy(loginPolicy)
+		if err != nil {
+			return "", err
+		}
+		// CallUniversalAuthLogin takes no context, and a login that never answers would hold an exiting run open.
+		httpClient.OnBeforeRequest(func(_ *resty.Client, req *resty.Request) error {
+			req.SetContext(ctx)
+			return nil
+		})
+		loginResp, err := api.CallUniversalAuthLogin(httpClient, api.UniversalAuthLoginRequest{ClientId: clientID, ClientSecret: clientSecret})
 		if err != nil {
 			return "", err
 		}
@@ -454,6 +747,12 @@ func revocationToken(cmd *cobra.Command) (string, error) {
 }
 
 func resolveAgentVaultIdentityToken(cmd *cobra.Command) string {
+	return resolveAgentVaultIdentity(cmd, true)
+}
+
+// Without the wizard, an expired or missing login is an error rather than an interactive sign-in, for a command
+// whose output is being captured and so has nobody watching its prompts.
+func resolveAgentVaultIdentity(cmd *cobra.Command, allowLoginWizard bool) string {
 	clientID, _ := util.GetCmdFlagOrEnvWithDefaultValue(cmd, "client-id", []string{util.INFISICAL_UNIVERSAL_AUTH_CLIENT_ID_NAME}, "")
 	clientSecret, _ := util.GetCmdFlagOrEnvWithDefaultValue(cmd, "client-secret", []string{util.INFISICAL_UNIVERSAL_AUTH_CLIENT_SECRET_NAME}, "")
 	if clientID != "" && clientSecret != "" {
@@ -472,7 +771,13 @@ func resolveAgentVaultIdentityToken(cmd *cobra.Command) string {
 	}
 
 	details, err := util.GetCurrentLoggedInUserDetails(true)
-	if err != nil || !details.IsUserLoggedIn || details.LoginExpired {
+	if err = agentVaultLoginReadError(err); err != nil {
+		util.HandleError(err, "Unable to read your Infisical login")
+	}
+	if !details.IsUserLoggedIn || details.LoginExpired {
+		if !allowLoginWizard {
+			util.HandleError(fmt.Errorf("your Infisical login has expired or is missing, and this command's output is being captured, so it can't sign you in. Run 'infisical login' first, set %s, or pass --client-id and --client-secret", util.INFISICAL_TOKEN_NAME))
+		}
 		details = util.EstablishUserLoginSession()
 	}
 	if details.UserCredentials.JTWToken == "" {
@@ -480,6 +785,15 @@ func resolveAgentVaultIdentityToken(cmd *cobra.Command) string {
 	}
 	failIfTokenExpired(details.UserCredentials.JTWToken, "your login")
 	return details.UserCredentials.JTWToken
+}
+
+// A login missing from the keyring is a missing login, which signing in fixes. Any other error (a broken config
+// file, an unreadable keyring, a profile for another domain) would not be fixed by the wizard, so it is shown.
+func agentVaultLoginReadError(err error) error {
+	if err == nil || errors.Is(err, util.ErrUserNotLoggedIn) {
+		return nil
+	}
+	return err
 }
 
 // Windows resolves variable names case-insensitively, so os.Getenv finds a lowercase spelling and the run
@@ -513,13 +827,25 @@ func isAgentVaultSessionTokenKey(key string) bool {
 //
 // 'secrets agent-proxy run' strips a longer list because its agent is sandboxed and cannot read those
 // credentials back from disk.
-func buildAgentVaultRunEnv(parent []string, proxyAddr, sessionToken, caPath, extraNoProxy string) []string {
-	stale := map[string]bool{}
+// agentVaultRunNoProxy is the agent's NO_PROXY: the operator's own entries and --no-proxy, merged with the ones every
+// run needs.
+func agentVaultRunNoProxy(parent []string, extraNoProxy string) string {
+	var operatorNoProxy []string
+	for _, kv := range parent {
+		if key, value, ok := strings.Cut(kv, "="); ok && (key == "NO_PROXY" || key == "no_proxy") {
+			operatorNoProxy = append(operatorNoProxy, value)
+		}
+	}
+	return mergeNoProxy(append(operatorNoProxy, extraNoProxy)...)
+}
+
+func buildAgentVaultRunEnv(parent []string, proxyAddr, sessionToken, caPath, extraNoProxy, apiURL string) []string {
+	// The URL is the proxy's to name, so a value from the environment never reaches the agent in its place.
+	stale := map[string]bool{agentvault.URLEnv: true}
 	for _, k := range proxyEnvKeys {
 		stale[k] = true
 	}
 
-	var operatorNoProxy []string
 	env := map[string]string{}
 	for _, kv := range parent {
 		parts := strings.SplitN(kv, "=", 2)
@@ -527,7 +853,6 @@ func buildAgentVaultRunEnv(parent []string, proxyAddr, sessionToken, caPath, ext
 			continue
 		}
 		if parts[0] == "NO_PROXY" || parts[0] == "no_proxy" {
-			operatorNoProxy = append(operatorNoProxy, parts[1])
 			continue
 		}
 		if isAgentVaultSessionTokenKey(parts[0]) && parts[1] != sessionToken {
@@ -538,7 +863,11 @@ func buildAgentVaultRunEnv(parent []string, proxyAddr, sessionToken, caPath, ext
 		}
 	}
 
-	setProxyEnv(env, agentVaultProxyURL(proxyAddr, sessionToken), mergeNoProxy(append(operatorNoProxy, extraNoProxy)...))
+	setProxyEnv(env, agentVaultProxyURL(proxyAddr, sessionToken), agentVaultRunNoProxy(parent, extraNoProxy))
+	// Through the proxy like any request, so the session comes from the tunnel and the agent never handles its token.
+	if infisicalURL := agentvault.InfisicalURL(apiURL); infisicalURL != "" {
+		env[agentvault.URLEnv] = infisicalURL
+	}
 
 	if caPath != "" {
 		for _, k := range caTrustEnvVars {
@@ -558,15 +887,20 @@ func buildAgentVaultRunEnv(parent []string, proxyAddr, sessionToken, caPath, ext
 // The address goes into the agent's proxy URL with the session token as the password, so anything that is
 // not a bare host and port reaches the agent as a malformed URL, and curl prints that URL, token included.
 func validateProxyAddr(addr string) error {
+	return validateProxyAddrFrom(addr, "--proxy")
+}
+
+// source is where the address came from (a flag or a variable), so the error names what to fix.
+func validateProxyAddrFrom(addr, source string) error {
 	if strings.ContainsAny(addr, "/?#") {
-		return fmt.Errorf("--proxy must be host:port with nothing after the port, such as 10.0.1.5:17323, got %q", addr)
+		return fmt.Errorf("%s must be host:port with nothing after the port, such as 10.0.1.5:17323, got %q", source, addr)
 	}
 	host, port, err := net.SplitHostPort(addr)
 	if err != nil || host == "" || strings.ContainsAny(host, " \t@") {
-		return fmt.Errorf("--proxy must be host:port, such as 10.0.1.5:17323, got %q", addr)
+		return fmt.Errorf("%s must be host:port, such as 10.0.1.5:17323, got %q", source, addr)
 	}
 	if n, convErr := strconv.Atoi(port); convErr != nil || n < 1 || n > 65535 {
-		return fmt.Errorf("--proxy must name a port between 1 and 65535, got %q", addr)
+		return fmt.Errorf("%s must name a port between 1 and 65535, got %q", source, addr)
 	}
 	return nil
 }
@@ -600,6 +934,64 @@ func agentVaultCaFingerprint(certificatePEM string) ([]byte, string, error) {
 	return single, agentvault.FingerprintOf(block.Bytes), nil
 }
 
+// What `infisical agent-vault connect` needs when the agent runs it: the session, the proxy, the CA file to trust
+// it by, and the Infisical the session belongs to. The token already reaches the agent in HTTPS_PROXY, so naming it
+// again exposes nothing new. A domain the operator's environment set is left as it is, unless --domain was passed:
+// then the session is on that Infisical, and an inherited one would send the agent's lookups elsewhere.
+func withAgentVaultConnectEnv(env []string, proxyAddr, sessionToken, caPath, apiURL string, domainFlag bool) []string {
+	set := map[string]string{
+		agentVaultSessionTokenEnv: sessionToken,
+		agentVaultProxyAddressEnv: proxyAddr,
+	}
+	// Without a CA file of this run, a stale one from the parent would name another proxy's CA.
+	if caPath != "" {
+		set[agentVaultCaFileEnv] = caPath
+	}
+	sameKey := func(a, b string) bool {
+		if runtime.GOOS == "windows" {
+			return strings.EqualFold(a, b)
+		}
+		return a == b
+	}
+
+	hasDomain := false
+	// Bound the allocation below. Entries come from os.Environ, which the OS
+	// caps near ARG_MAX, so a count anywhere near overflow is a caller bug:
+	// fail closed instead of sizing an allocation from it.
+	if len(env) > maxAgentVaultEnvEntries {
+		return nil
+	}
+	out := make([]string, 0, len(env)+len(set)+1)
+	for _, kv := range env {
+		key, _, _ := strings.Cut(kv, "=")
+		replaced := sameKey(key, agentVaultCaFileEnv)
+		for name := range set {
+			if sameKey(key, name) {
+				replaced = true
+			}
+		}
+		for _, name := range util.DomainEnvNames {
+			if sameKey(key, name) {
+				if domainFlag && apiURL != "" {
+					replaced = true
+				} else {
+					hasDomain = true
+				}
+			}
+		}
+		if !replaced {
+			out = append(out, kv)
+		}
+	}
+	for name, value := range set {
+		out = append(out, name+"="+value)
+	}
+	if !hasDomain && apiURL != "" {
+		out = append(out, util.INFISICAL_DOMAIN_ENV_NAME+"="+strings.TrimSuffix(apiURL, "/api"))
+	}
+	return out
+}
+
 func agentVaultFingerprintsEqual(a, b string) bool {
 	normalize := func(s string) string {
 		s = strings.TrimSpace(s)
@@ -609,7 +1001,7 @@ func agentVaultFingerprintsEqual(a, b string) bool {
 	return normalize(a) != "" && normalize(a) == normalize(b)
 }
 
-func printAgentVaultRunSummary(proxyAddr string, ca agentVaultProxyCa, fingerprint string, minted *api.AgentVaultSession, tokenSource, bundleSource agentVaultSource) {
+func printAgentVaultRunSummary(proxyAddr string, ca agentVaultProxyCa, fingerprint string, minted *api.AgentVaultSession, project agentVaultProject, tokenSource, bundleSource agentVaultSource) {
 	dim := color.HiBlackString
 	fmt.Fprintln(os.Stderr, color.GreenString("Starting agent behind Agent Vault proxy %q at %s", ca.Name, proxyAddr))
 	fmt.Fprintln(os.Stderr, dim("proxy CA fingerprint: "+fingerprint))
@@ -621,6 +1013,7 @@ func printAgentVaultRunSummary(proxyAddr string, ca agentVaultProxyCa, fingerpri
 		fmt.Fprintln(os.Stderr, dim("access bundle from "+agentVaultAccessBundleEnv))
 	}
 	if minted != nil {
+		fmt.Fprintln(os.Stderr, dim(fmt.Sprintf("Agent Vault project %s from %s", project.ID, project.Source)))
 		expiry := "never"
 		if minted.ExpiresAt != nil {
 			expiry = *minted.ExpiresAt
@@ -662,11 +1055,18 @@ func init() {
 	agentVaultRunCmd.Flags().String("session-token", "", "run with a session token minted in the dashboard instead of minting one (falls back to "+agentVaultSessionTokenEnv+")")
 	agentVaultRunCmd.Flags().String("ttl", "never", "lifetime of the session this command creates: one number and one unit, such as 30m, 8h or 7d (not 2h30m), or never")
 	agentVaultRunCmd.Flags().Bool("keep-session", false, "leave a minted session active when the agent exits")
+	agentVaultRunCmd.Flags().String("project-id", "", "Agent Vault project of the access bundle to mint over (falls back to "+agentVaultProjectIDEnv+", then INFISICAL_PROJECT_ID)")
+	agentVaultRunCmd.Flags().String("label", "", "describe what the session this command creates is for (up to 128 characters)")
+	agentVaultRunCmd.Flags().StringArray("metadata", nil, "attach a key=value pair to the session this command creates, such as runId=8812 (repeatable, up to 20; the value can contain = but the key can't)")
 	agentVaultRunCmd.Flags().String("proxy", "", "address of the Agent Vault proxy as host:port (falls back to "+agentVaultProxyAddressEnv+")")
 	agentVaultRunCmd.Flags().String("ca-fingerprint", "", "abort unless the proxy's certificate authority matches this SHA256 fingerprint from Infisical")
 	agentVaultRunCmd.Flags().String("no-proxy", "", "additional comma-separated hosts to bypass the proxy (always merged with localhost,127.0.0.1)")
 	agentVaultRunCmd.Flags().String("ca-file", "", "where to write the certificate authority fetched from the proxy; an output path, not a CA to trust (default: "+filepath.Join(defaultDataDirHelp(), "ca-<proxy-id>.pem")+")")
 	agentVaultRunCmd.Flags().Bool("no-ca-trust", false, "skip writing the certificate authority and setting the trust variables, for a host that already trusts this proxy's CA (a pinned fingerprint is still checked)")
+	agentVaultRunCmd.Flags().String("skills-dir", "", "install the session's skills into this `folder` instead of ~/.agents/skills, without linking them for Claude Code or Hermes")
+	agentVaultRunCmd.Flags().Bool("no-skills", false, "start the agent without installing the session's skills")
+	agentVaultRunCmd.Flags().Bool("no-agent-vault-skill", false, "skip the built-in "+agentvault.BuiltinSkillName+" skill, which tells the agent how to work behind the proxy (--no-skills skips it too)")
+	agentVaultRunCmd.Flags().Bool("no-mcp-servers", false, "don't add the session's MCP servers to Claude Code with --mcp-config")
 	agentVaultRunCmd.Flags().String("client-id", "", "universal auth client id of the machine identity that mints the session (falls back to INFISICAL_UNIVERSAL_AUTH_CLIENT_ID)")
 	agentVaultRunCmd.Flags().String("client-secret", "", "universal auth client secret of that machine identity (falls back to INFISICAL_UNIVERSAL_AUTH_CLIENT_SECRET)")
 

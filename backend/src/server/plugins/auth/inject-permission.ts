@@ -72,7 +72,7 @@ export const injectPermission = fp(async (server) => {
       };
 
       logger.info(
-        `injectPermission: Injecting permissions for [permissionsForGateway=${req.auth.gatewayId}] [type=${ActorType.GATEWAY}]`
+        `injectPermission: Injecting permissions for [permissionsForGateway=<redacted>] [type=${ActorType.GATEWAY}]`
       );
     } else if (req.auth.actor === ActorType.RELAY) {
       req.permission = {
@@ -85,7 +85,7 @@ export const injectPermission = fp(async (server) => {
       };
 
       logger.info(
-        `injectPermission: Injecting permissions for [permissionsForRelay=${req.auth.relayId}] [type=${ActorType.RELAY}]`
+        `injectPermission: Injecting permissions for [permissionsForRelay=<redacted>] [type=${ActorType.RELAY}]`
       );
     } else if (req.auth.actor === ActorType.KMIP_SERVER) {
       req.permission = {
@@ -98,7 +98,7 @@ export const injectPermission = fp(async (server) => {
       };
 
       logger.info(
-        `injectPermission: Injecting permissions for [permissionsForKmipServer=${req.auth.kmipServerId}] [type=${ActorType.KMIP_SERVER}]`
+        `injectPermission: Injecting permissions for [permissionsForKmipServer=<redacted>] [type=${ActorType.KMIP_SERVER}]`
       );
     } else if (req.auth.actor === ActorType.AGENT_VAULT_PROXY) {
       // Without this the proxy routes' rate-limit keyGenerator falls back to source IP.
@@ -112,7 +112,7 @@ export const injectPermission = fp(async (server) => {
       };
 
       logger.info(
-        `injectPermission: Injecting permissions for [permissionsForAgentVaultProxy=${req.auth.agentVaultProxyId}] [type=${ActorType.AGENT_VAULT_PROXY}]`
+        `injectPermission: Injecting permissions for [permissionsForAgentVaultProxy=<redacted>] [type=${ActorType.AGENT_VAULT_PROXY}]`
       );
     }
   });

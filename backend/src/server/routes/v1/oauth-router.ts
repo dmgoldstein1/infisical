@@ -627,7 +627,7 @@ export const registerOAuthRouter = async (server: FastifyZodProvider) => {
       } catch (error) {
         const tokenError = toOauthTokenError(error, req.body.grant_type);
         if (tokenError !== error && tokenError.oauthErrorCode === OauthTokenErrorCode.ServerError) {
-          req.log.error(error, "OAuth token request failed unexpectedly");
+          req.log.error("OAuth token request failed unexpectedly");
         }
 
         throw tokenError;

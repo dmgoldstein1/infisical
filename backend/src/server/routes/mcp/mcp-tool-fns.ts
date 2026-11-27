@@ -32,7 +32,7 @@ const $toToolInput = <T extends z.ZodTypeAny>(schema: T) => {
   } as StandardSchemaWithJSON<z.input<T>, z.output<T>>;
 };
 
-const $getToolErrorMessage = (error: unknown, toolName: string, actorId: string) => {
+const $getToolErrorMessage = (error: unknown, toolName: string) => {
   if (error instanceof ForbiddenError) return `You are not allowed to ${error.action} on ${error.subjectType}`;
   if (
     error instanceof BadRequestError ||
@@ -44,7 +44,7 @@ const $getToolErrorMessage = (error: unknown, toolName: string, actorId: string)
     return error.message;
   }
 
-  logger.error(error, `MCP tool call failed [tool=${toolName}] [actorId=${actorId}]`);
+  logger.error(error, `MCP tool call failed [tool=${toolName}]`);
   return "Something went wrong while running this tool. Try again, and contact support if it keeps happening.";
 };
 
@@ -69,7 +69,7 @@ export const createMcpToolContext = (
     try {
       await server.services.telemetry.sendPostHogEvents(event);
     } catch (error) {
-      logger.error(error, `Failed to send MCP analytics event [event=${event.event}] [actorId=${req.permission.id}]`);
+      logger.error(error, `Failed to send MCP analytics event [event=${event.event}]`);
     }
   };
 
@@ -115,7 +115,7 @@ export const createMcpToolContext = (
         }
 
         return {
-          content: [{ type: "text" as const, text: $getToolErrorMessage(error, name, req.permission.id) }],
+          content: [{ type: "text" as const, text: $getToolErrorMessage(error, name) }],
           isError: true
         };
       }

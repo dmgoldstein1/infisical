@@ -3,6 +3,8 @@ package agentvault
 import (
 	"sync/atomic"
 
+	"crypto/hmac"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -115,10 +117,23 @@ type credentialSwap struct {
 	gen         uint64
 }
 
-// The map key is the sha256 of the token, never the token itself, so a heap dump yields no live credential.
+// sessionHMACKey is process-local randomness for sessionKey: the key only
+// indexes in-memory maps and log lines, so it needs consistency within the
+// process, not across restarts. A heap dump then yields no token-derived
+// value an offline brute force could invert, unlike a plain SHA256.
+var sessionHMACKey = func() []byte {
+	key := make([]byte, 32)
+	if _, err := rand.Read(key); err != nil {
+		panic("agentvault: cannot seed session HMAC key: " + err.Error())
+	}
+	return key
+}()
+
+// The map key is the HMAC of the token, never the token itself, so a heap dump yields no live credential.
 func sessionKey(token string) string {
-	sum := sha256.Sum256([]byte(token))
-	return hex.EncodeToString(sum[:])
+	mac := hmac.New(sha256.New, sessionHMACKey)
+	mac.Write([]byte(token))
+	return hex.EncodeToString(mac.Sum(nil))
 }
 
 type sessionResolver interface {

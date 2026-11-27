@@ -394,8 +394,11 @@ func TestProxyResignsRequestsWithSessionCredentials(t *testing.T) {
 	// The response is logged once it has been relayed, so it can land just after the client reads it
 	events := logger.waitFor(t, 4)
 	for _, event := range events {
-		if event.Headers.Get("Authorization") != "" || event.Headers.Get("X-Amz-Security-Token") != "" {
-			t.Errorf("%s event logged credentials", event.EventType)
+		if got := event.Headers.Get("Authorization"); got != "" && got != "[redacted]" {
+			t.Errorf("%s event logged Authorization credential %q", event.EventType, got)
+		}
+		if got := event.Headers.Get("X-Amz-Security-Token"); got != "" && got != "[redacted]" {
+			t.Errorf("%s event logged session token %q", event.EventType, got)
 		}
 	}
 	if string(events[1].Body) != "ok from aws" {
@@ -422,7 +425,7 @@ func TestProxyPassesUnsignedRequestsThrough(t *testing.T) {
 	if got.req.Header.Get("x-amz-sso_bearer_token") != "sso-access-token" {
 		t.Error("the SSO token didn't reach AWS")
 	}
-	if logged := logger.waitFor(t, 2)[0].Headers.Get("x-amz-sso_bearer_token"); logged != "" {
+	if logged := logger.waitFor(t, 2)[0].Headers.Get("x-amz-sso_bearer_token"); logged != "" && logged != "[redacted]" {
 		t.Errorf("the session log kept the SSO token %q", logged)
 	}
 }

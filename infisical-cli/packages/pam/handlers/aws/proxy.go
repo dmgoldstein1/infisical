@@ -556,16 +556,12 @@ func forwardedHeaders(header http.Header, signed bool) http.Header {
 	return forwarded
 }
 
-// Headers that carry a credential or a key, which the session log would otherwise keep, since it masks only bodies
-var credentialHeaders = []string{
-	"Authorization", "X-Amz-Security-Token", "Proxy-Authorization", "Set-Cookie", "X-Amz-Sso_bearer_token",
-	"X-Amz-Server-Side-Encryption-Customer-Key", "X-Amz-Copy-Source-Server-Side-Encryption-Customer-Key",
-}
-
+// loggedHeaders keeps only header names for the session log: any header can
+// carry a credential (Cookie, X-Api-Key, ...), so no value is logged.
 func loggedHeaders(header http.Header) http.Header {
-	logged := header.Clone()
-	for _, name := range credentialHeaders {
-		logged.Del(name)
+	logged := make(http.Header, len(header))
+	for name := range header {
+		logged[name] = []string{"[redacted]"}
 	}
 	return logged
 }

@@ -60,18 +60,12 @@ func (lw *limitedWriter) Write(p []byte) (int, error) {
 	return n, err
 }
 
-// credentialHeaders are never written to session audit logs: the session log
-// is an audit trail of what was proxied, not a vault for the credentials that
-// did it. Mirrors the AWS proxy's loggedHeaders redaction.
-var credentialHeaders = []string{
-	"Authorization", "Proxy-Authorization", "Cookie", "Set-Cookie",
-	"X-Amz-Security-Token", "X-Amz-Sso_bearer_token", "X-Api-Key",
-}
-
+// loggedHeaders keeps only header names for the session log: any header can
+// carry a credential (Cookie, X-Api-Key, ...), so no value is logged.
 func loggedHeaders(header http.Header) http.Header {
-	logged := header.Clone()
-	for _, name := range credentialHeaders {
-		logged.Del(name)
+	logged := make(http.Header, len(header))
+	for name := range header {
+		logged[name] = []string{"[redacted]"}
 	}
 	return logged
 }

@@ -12,6 +12,8 @@
 package fakenet
 
 import (
+	"crypto/hmac"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -181,9 +183,22 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	log.Printf("%-6s %s%s -> %d  scope=%s", r.Method, hostOf(r), r.URL.Path, rec.status, short(key))
 }
 
+// shortKeyMAC is process-local randomness for short(): the fingerprint only
+// correlates log lines within one test run, so it needs in-process
+// consistency, not cross-run stability. A heap or log dump then yields no
+// token-derived value an offline brute force could invert, unlike plain SHA256.
+var shortKeyMAC = func() []byte {
+	key := make([]byte, 32)
+	if _, err := rand.Read(key); err != nil {
+		panic("fakenet: cannot seed fingerprint key: " + err.Error())
+	}
+	return key
+}()
+
 func short(key string) string {
-	sum := sha256.Sum256([]byte(key))
-	return hex.EncodeToString(sum[:])[:12] + "..."
+	mac := hmac.New(sha256.New, shortKeyMAC)
+	mac.Write([]byte(key))
+	return hex.EncodeToString(mac.Sum(nil))[:12] + "..."
 }
 
 // scope returns a scope, creating it the first time a credential is seen.

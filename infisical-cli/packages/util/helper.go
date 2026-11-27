@@ -2,8 +2,6 @@ package util
 
 import (
 	"bytes"
-	"crypto/hmac"
-	cryptorand "crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
@@ -557,44 +555,96 @@ func GetCmdFlagOrEnvWithDefaultValue(cmd *cobra.Command, flag string, envNames [
 	return value, nil
 }
 
+const SettingSourceDefault = "default"
+
 // ResolveEnvironmentName resolves the environment slug for a command, in order:
 // the --env flag (if explicitly set) > INFISICAL_ENVIRONMENT > .infisical.yaml
 // (git-branch override or mapping, then the default environment) > the flag's own default value.
 // It keys off cmd.Flags().Changed rather than an empty-value check so env and workspace
 // are still consulted when --env is left at its default.
 func ResolveEnvironmentName(cmd *cobra.Command) string {
+	value, _ := ResolveEnvironmentNameWithSource(cmd)
+	return value
+}
+
+func ResolveEnvironmentNameWithSource(cmd *cobra.Command) (value, source string) {
 	if cmd.Flags().Changed("env") {
 		value, _ := cmd.Flags().GetString("env")
-		return value
+		return value, "--env flag"
 	}
 	if value := strings.TrimSpace(os.Getenv(INFISICAL_ENVIRONMENT_NAME)); value != "" {
-		return value
+		return value, INFISICAL_ENVIRONMENT_NAME + " environment variable"
 	}
 	if workspaceFile, err := workspaceFileForCommand(cmd); err == nil {
-		if value := envFromWorkspaceConfig(workspaceFile); value != "" {
-			return value
+		if env, branch := environmentForGitBranch(workspaceFile); env != "" {
+			return env, fmt.Sprintf("%s git-branch override (branch %q)", workspaceConfigNameForCommand(cmd), branch)
+		}
+		if workspaceFile.DefaultEnvironment != "" {
+			return workspaceFile.DefaultEnvironment, workspaceConfigNameForCommand(cmd)
 		}
 	}
-	value, _ := cmd.Flags().GetString("env")
-	return value
+	value, _ = cmd.Flags().GetString("env")
+	return value, SettingSourceDefault
 }
 
 // ResolveSecretPath resolves the secret path (folder) for a command, in order:
 // the --path flag (if explicitly set) > INFISICAL_SECRET_PATH > .infisical.yaml
 // secret-path (or the deprecated default-secret-path) > the flag's own default value ("/").
 func ResolveSecretPath(cmd *cobra.Command) string {
+	value, _ := ResolveSecretPathWithSource(cmd)
+	return value
+}
+
+func ResolveSecretPathWithSource(cmd *cobra.Command) (value, source string) {
 	if cmd.Flags().Changed("path") {
 		value, _ := cmd.Flags().GetString("path")
-		return value
+		return value, "--path flag"
 	}
 	if value := strings.TrimSpace(os.Getenv(INFISICAL_SECRET_PATH_NAME)); value != "" {
-		return value
+		return value, INFISICAL_SECRET_PATH_NAME + " environment variable"
 	}
 	if value := secretPathFromCommandWorkspace(cmd); value != "" {
-		return value
+		return value, workspaceConfigNameForCommand(cmd)
 	}
-	value, _ := cmd.Flags().GetString("path")
-	return value
+	value, _ = cmd.Flags().GetString("path")
+	return value, SettingSourceDefault
+}
+
+type WorkspaceConfigError struct {
+	Path string
+	Err  error
+}
+
+func (e *WorkspaceConfigError) Error() string {
+	return fmt.Sprintf("unable to read %s: %v", e.Path, e.Err)
+}
+
+func (e *WorkspaceConfigError) Unwrap() error { return e.Err }
+
+// ResolveProjectIDWithSource resolves the project for a command, in order: the --projectId flag >
+// INFISICAL_PROJECT_ID > the project config file (.infisical.yaml or a legacy .infisical.json).
+// It returns "" when none is set, and a *WorkspaceConfigError when the config file can't be read.
+func ResolveProjectIDWithSource(cmd *cobra.Command) (projectID, source string, err error) {
+	if flag := cmd.Flags().Lookup("projectId"); flag != nil {
+		if value := flag.Value.String(); value != "" {
+			return value, "--projectId flag", nil
+		}
+	}
+	if value := strings.TrimSpace(os.Getenv(INFISICAL_PROJECT_ID_NAME)); value != "" {
+		return value, INFISICAL_PROJECT_ID_NAME + " environment variable", nil
+	}
+	configFile, found := workspaceConfigPathForCommand(cmd)
+	if !found {
+		return "", "", nil
+	}
+	workspaceFile, err := GetWorkSpaceFromFilePath(filepath.Dir(configFile))
+	if err != nil {
+		return "", "", &WorkspaceConfigError{Path: configFile, Err: err}
+	}
+	if workspaceFile.WorkspaceId == "" {
+		return "", "", nil
+	}
+	return workspaceFile.WorkspaceId, filepath.Base(configFile), nil
 }
 
 // ResolveSecretPaths is ResolveSecretPath for commands whose --path flag can be repeated
@@ -623,6 +673,21 @@ func workspaceFileForCommand(cmd *cobra.Command) (models.WorkspaceConfigFile, er
 		return GetWorkSpaceFromFilePath(flag.Value.String())
 	}
 	return GetWorkSpaceFromFile()
+}
+
+func workspaceConfigPathForCommand(cmd *cobra.Command) (string, bool) {
+	if flag := cmd.Flags().Lookup("project-config-dir"); flag != nil && flag.Value.String() != "" {
+		return findWorkspaceConfigFileInDir(flag.Value.String())
+	}
+	path, err := FindWorkspaceConfigFile()
+	return path, err == nil
+}
+
+func workspaceConfigNameForCommand(cmd *cobra.Command) string {
+	if path, found := workspaceConfigPathForCommand(cmd); found {
+		return filepath.Base(path)
+	}
+	return INFISICAL_WORKSPACE_CONFIG_FILE_NAME
 }
 
 func secretPathFromCommandWorkspace(cmd *cobra.Command) string {
@@ -674,18 +739,6 @@ func GenerateRandomString(length int) string {
 	return string(b)
 }
 
-// etagMACKey is a process-lifetime key for ETags. ETags are compared
-// intra-process only (hot-reload change detection in cmd/run.go), so a
-// per-process key is safe; keying the MAC means a disclosed ETag cannot be
-// used to brute-force low-entropy secret values offline.
-var etagMACKey = sync.OnceValue(func() [32]byte {
-	var k [32]byte
-	if _, err := cryptorand.Read(k[:]); err != nil {
-		panic("util: etag MAC randomness unavailable")
-	}
-	return k
-})
-
 func GenerateETagFromSecrets(secrets []models.SingleEnvironmentVariable) string {
 	sortedSecrets := SortSecretsByKeys(secrets)
 	content := []byte{}
@@ -695,10 +748,8 @@ func GenerateETagFromSecrets(secrets []models.SingleEnvironmentVariable) string 
 		content = append(content, []byte(secret.Value)...)
 	}
 
-	key := etagMACKey()
-	mac := hmac.New(sha256.New, key[:])
-	_, _ = mac.Write(content)
-	return fmt.Sprintf(`"%s"`, hex.EncodeToString(mac.Sum(nil)))
+	hash := sha256.Sum256(content)
+	return fmt.Sprintf(`"%s"`, hex.EncodeToString(hash[:]))
 }
 
 func IsDevelopmentMode() bool {

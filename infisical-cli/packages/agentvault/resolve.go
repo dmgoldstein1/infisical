@@ -23,6 +23,7 @@ type resolveResult struct {
 	ExpiresAt  *time.Time
 	Services   []*resolvedService
 	SessionLog *sessionLogGrant
+	Session    *api.AgentVaultResolvedSession
 }
 
 const sessionLogKeyBytes = 32
@@ -61,16 +62,34 @@ func (r *infisicalResolver) resolve(sessionToken string, held *sessionLogGrant) 
 
 	services := make([]*resolvedService, 0, len(res.Services))
 	for _, wire := range res.Services {
+		kind := toServiceKind(wire.Type)
+		native := toNativeTarget(kind, wire.Native)
+		// A database or SSH service is reached by name only. It never gets host patterns, so no HTTP request can
+		// pick it and carry its password, whatever its host pattern holds.
+		var hostPatterns []hostPattern
+		if !isNativeKind(kind) {
+			hostPatterns = parseHostPatterns(wire.HostPattern)
+		}
 		services = append(services, &resolvedService{
-			id:                  wire.ID,
-			name:                wire.Name,
-			accessBundleName:    wire.AccessBundleName,
-			hostPatterns:        parseHostPatterns(wire.HostPattern),
-			allowedMethods:      toMethodSet(wire.AllowedMethods),
-			allowedPathPrefixes: toPathPrefixes(wire.AllowedPathPrefixes),
-			credential:          toCredential(wire.Credential),
-			customHeaders:       toCustomHeaders(wire.CustomHeaders),
-			substitutions:       toSubstitutions(wire.Substitutions),
+			id:                     wire.ID,
+			name:                   wire.Name,
+			kind:                   kind,
+			accessBundleID:         derefString(wire.AccessBundleID),
+			accessBundleName:       wire.AccessBundleName,
+			hostPattern:            wire.HostPattern,
+			hostPatterns:           hostPatterns,
+			native:                 native,
+			allowedMethods:         toMethodSet(wire.AllowedMethods),
+			allowedPathPrefixes:    toPathPrefixes(wire.AllowedPathPrefixes),
+			allowedTools:           toToolSet(wire.AllowedTools),
+			credential:             toCredential(wire.Credential),
+			customHeaders:          toCustomHeaders(wire.CustomHeaders),
+			substitutions:          toSubstitutions(wire.Substitutions),
+			personalValuesMissing:  wire.PersonalValuesMissing,
+			memberProvided:         wire.MemberProvided,
+			credentialRemoved:      wire.CredentialRemoved,
+			credentialNotConnected: wire.CredentialNotConnected,
+			hook:                   toServiceHook(wire.Hook),
 		})
 	}
 
@@ -79,7 +98,29 @@ func (r *infisicalResolver) resolve(sessionToken string, held *sessionLogGrant) 
 		ExpiresAt:  expiresAt,
 		Services:   services,
 		SessionLog: toSessionLogGrant(res.SessionID, res.SessionLogs, held),
+		Session:    res.Session,
 	}, nil
+}
+
+// Bounded by the resolver client's timeout, so a stalled control plane fails the refresh rather than
+// holding the agent's request open.
+func (r *infisicalResolver) refreshCredential(sessionToken, serviceID, hostPattern, rejectedHash string) (credential, string, error) {
+	res, err := api.CallRefreshAgentVaultServiceCredential(r.client, sessionToken, serviceID, api.RefreshAgentVaultServiceCredentialRequest{
+		HostPattern:       hostPattern,
+		RejectedTokenHash: rejectedHash,
+	})
+	if err != nil {
+		return credential{}, "", err
+	}
+	return toCredential(res.Credential), res.Status, nil
+}
+
+func (r *infisicalResolver) reportMissingScopes(sessionToken, serviceID, hostPattern, rejectedHash string, requiredScopes []string) error {
+	return api.CallReportAgentVaultServiceMissingScopes(r.client, sessionToken, serviceID, api.ReportAgentVaultServiceMissingScopesRequest{
+		HostPattern:       hostPattern,
+		RejectedTokenHash: rejectedHash,
+		RequiredScopes:    requiredScopes,
+	})
 }
 
 func toSessionLogGrant(sessionID string, wire api.AgentVaultSessionLogGrant, held *sessionLogGrant) *sessionLogGrant {
@@ -103,20 +144,66 @@ func toSessionLogGrant(sessionID string, wire api.AgentVaultSessionLogGrant, hel
 	return newSessionLogGrant(sessionID, key)
 }
 
+func derefString(s *string) string {
+	if s == nil {
+		return ""
+	}
+	return *s
+}
+
+// Anything unrecognised is http, so a newer backend's type is brokered the way this proxy already knows how.
+func toServiceKind(wire string) string {
+	switch wire {
+	case serviceKindMCP, serviceKindPostgres, serviceKindMySQL, serviceKindSSH:
+		return wire
+	}
+	return serviceKindHTTP
+}
+
+// Nil unless the service is a database or SSH service and the server said where it is.
+func toNativeTarget(kind string, wire *api.AgentVaultNativeTarget) *nativeTarget {
+	if !isNativeKind(kind) || wire == nil || wire.Host == "" || wire.Port == 0 {
+		return nil
+	}
+	// TLS on and verified unless the server says otherwise, so a missing or partial tls object fails closed.
+	target := &nativeTarget{host: wire.Host, port: wire.Port, database: wire.Database, tlsEnabled: true, tlsVerify: true}
+	if wire.TLS != nil {
+		if wire.TLS.Enabled != nil {
+			target.tlsEnabled = *wire.TLS.Enabled
+		}
+		if wire.TLS.Verify != nil {
+			target.tlsVerify = *wire.TLS.Verify
+		}
+		target.ca = wire.TLS.CA
+	}
+	return target
+}
+
 func toCredential(wire api.AgentVaultCredential) credential {
 	switch wire.Type {
 	case credentialBearer:
-		return credential{
+		cred := credential{
 			kind:         credentialBearer,
 			headerName:   wire.HeaderName,
 			headerPrefix: wire.HeaderPrefix,
 			value:        []byte(wire.Value),
 		}
+		if wire.Source == credentialSourceOAuth {
+			cred.refreshable = true
+		}
+		return cred
 	case credentialBasic:
 		return credential{
 			kind:     credentialBasic,
 			username: wire.Username,
 			password: []byte(wire.Password),
+		}
+	case credentialSSHKey:
+		return credential{
+			kind:        credentialSSHKey,
+			username:    wire.Username,
+			privateKey:  []byte(wire.PrivateKey),
+			certificate: wire.Certificate,
 		}
 	default:
 		return credential{kind: credentialPassthrough}
@@ -134,6 +221,19 @@ func toMethodSet(methods []string) map[string]bool {
 	return set
 }
 
+// Exact names, case and all, since that is how an MCP server matches them. Fails closed like toMethodSet:
+// only nil means every tool, so a list that arrived empty allows none.
+func toToolSet(tools []string) map[string]bool {
+	if tools == nil {
+		return nil
+	}
+	set := make(map[string]bool, len(tools))
+	for _, tool := range tools {
+		set[tool] = true
+	}
+	return set
+}
+
 // Normalised the same way the backend stores them, so a trailing slash cannot make a prefix unmatchable.
 //
 // Fails closed like toMethodSet: nil means unrestricted, and anything else means restricted, including a
@@ -145,21 +245,25 @@ func toPathPrefixes(prefixes []string) []string {
 	}
 	out := make([]string, 0, len(prefixes))
 	for _, prefix := range prefixes {
-		prefix = strings.TrimSpace(prefix)
-		if prefix != "/" {
-			prefix = strings.TrimRight(prefix, "/")
+		if prefix = normalizePathPrefix(prefix); prefix != "" {
+			out = append(out, prefix)
 		}
-		// After the trim, so an all-slashes prefix cannot arrive here as "" and match every path.
-		if prefix == "" {
-			continue
-		}
-		out = append(out, prefix)
 	}
 	if len(out) == 0 {
 		// A prefix no request can match, so a restriction the server sent empty allows nothing.
 		return []string{"\x00"}
 	}
 	return out
+}
+
+// Empty when nothing usable is left. Checked after the trim, so an all-slashes prefix cannot arrive as "" and match
+// every path.
+func normalizePathPrefix(prefix string) string {
+	prefix = strings.TrimSpace(prefix)
+	if prefix != "/" {
+		prefix = strings.TrimRight(prefix, "/")
+	}
+	return prefix
 }
 
 func toCustomHeaders(wire []api.AgentVaultCustomHeader) []customHeader {

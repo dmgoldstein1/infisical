@@ -3,13 +3,14 @@ package agentvault
 import (
 	"sync/atomic"
 
-	"crypto/hmac"
-	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"golang.org/x/sync/singleflight"
 	"net/http"
+	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -39,6 +40,11 @@ type credential struct {
 	value        []byte
 	username     string
 	password     []byte
+	// An ssh-key credential's key and optional certificate, for a database or SSH service's login.
+	privateKey  []byte
+	certificate string
+	// Only an OAuth token Infisical issued can be refreshed when the upstream rejects it.
+	refreshable bool
 }
 
 type customHeader struct {
@@ -56,14 +62,33 @@ type substitution struct {
 type resolvedService struct {
 	id               string
 	name             string
+	kind             string
+	accessBundleID   string
 	accessBundleName string
-	hostPatterns     []hostPattern
-	// A nil map means every method is allowed; an empty slice of prefixes means every path.
+	// As Infisical sent it, so a credential refresh can name the destination the rejected token went to.
+	hostPattern  string
+	hostPatterns []hostPattern
+	// A nil map means every method is allowed; an empty slice of prefixes means every path. allowedTools is
+	// MCP only, the exact names tools/call may name, and nil means every tool.
 	allowedMethods      map[string]bool
 	allowedPathPrefixes []string
+	allowedTools        map[string]bool
 	credential          credential
 	customHeaders       []customHeader
 	substitutions       []substitution
+	// Set when the session's owner still has to set their personal values. The server sends the
+	// service with no credential, so forwarding it would reach the host unauthenticated.
+	personalValuesMissing bool
+	// Set for a database or SSH service, which is reached by name over its own protocol rather than by host.
+	native *nativeTarget
+	// Some credential field comes from each member, so a rejection is theirs to fix rather than an admin's.
+	memberProvided bool
+	// The OAuth variable the service signed in with was deleted, so it has no credential to send.
+	credentialRemoved bool
+	// The OAuth variable the service signs in with isn't connected, so it has no credential to send.
+	credentialNotConnected bool
+	// Asked before the credential is attached. Nil when the service has none.
+	hook *serviceHook
 }
 
 // lastSeen and fetchedAt are wall-clock (Round(0)) so time asleep counts toward the grace and idle windows.
@@ -74,32 +99,37 @@ type sessionEntry struct {
 	expiresAt  *time.Time
 	services   []*resolvedService
 	sessionLog *sessionLogGrant
-	lastSeen   time.Time
-	fetchedAt  time.Time
+	// What a hook is told about the session. Nil from servers that don't send it.
+	session   *api.AgentVaultResolvedSession
+	lastSeen  time.Time
+	fetchedAt time.Time
+	// Keyed by service ID. A poll whose resolve began before a swap can return the token that swap replaced,
+	// so the merge consults this to keep the newer one.
+	swaps map[string]*credentialSwap
 }
 
-// The map key is an HMAC of the token under a process-lifetime key, never the
-// token itself, so a heap dump yields no live credential and the lookup key is
-// not a deterministic function of the token that could be brute-forced offline.
-// A keyed MAC (not a password hash) is the correct primitive here: the cache is
-// in-memory only, so per-process keys are safe, and lookups must stay cheap.
-var sessionKeyMAC = sync.OnceValue(func() [32]byte {
-	var k [32]byte
-	if _, err := rand.Read(k[:]); err != nil {
-		panic("agentvault: session key MAC randomness unavailable")
-	}
-	return k
-})
+type credentialSwap struct {
+	installed   credential
+	hostPattern string
+	replaced    map[string]bool
+	gen         uint64
+}
 
+// The map key is the sha256 of the token, never the token itself, so a heap dump yields no live credential.
 func sessionKey(token string) string {
-	key := sessionKeyMAC()
-	mac := hmac.New(sha256.New, key[:])
-	_, _ = mac.Write([]byte(token))
-	return hex.EncodeToString(mac.Sum(nil))
+	sum := sha256.Sum256([]byte(token))
+	return hex.EncodeToString(sum[:])
 }
 
 type sessionResolver interface {
 	resolve(sessionToken string, held *sessionLogGrant) (*resolveResult, error)
+}
+
+// Implemented by the Infisical resolver. Kept apart from sessionResolver so resolvers that never broker an
+// OAuth credential need not stub it.
+type credentialRefresher interface {
+	refreshCredential(sessionToken, serviceID, hostPattern, rejectedHash string) (credential, string, error)
+	reportMissingScopes(sessionToken, serviceID, hostPattern, rejectedHash string, requiredScopes []string) error
 }
 
 type sessionCache struct {
@@ -108,6 +138,9 @@ type sessionCache struct {
 
 	// Concurrent misses for one session share a single resolve rather than each posting to Infisical.
 	inflight singleflight.Group
+	// Concurrent upstream 401s for one service share a single refresh, so a burst of requests holding the
+	// same expired token costs Infisical one call.
+	credentialFlights singleflight.Group
 	// A refresh that outlives the poll interval must not pile a second one on top, nor hold up the heartbeat.
 	refreshing atomic.Bool
 
@@ -117,6 +150,22 @@ type sessionCache struct {
 	// A definitive refusal is remembered briefly, so an agent retrying a dead session costs one resolve per
 	// window rather than one per request. Outages and throttling are never stored here.
 	refused map[string]refusedEntry
+	// A failed credential refresh is remembered the same way, per service and rejected token, so while
+	// Infisical is down or slow each request carrying that token gets its 502 at once rather than another
+	// refresh that can take the whole control-plane timeout.
+	failedRefreshes map[string]refusedEntry
+	// A scope report that reached Infisical, or failed to, is remembered too, so an agent repeating a call its
+	// grant does not cover sends one report per window rather than one per request.
+	reportedScopes map[string]refusedEntry
+	// Bumped under mu by every credential swap, so a poll can tell which swaps happened after it began.
+	swapGen uint64
+
+	// Open database and SSH connections per session, guarded by mu. A session with one is pinned: housekeeping
+	// never drops it and the poll loop keeps asking about it, so a revoke is noticed however idle it sits.
+	native     map[string]map[*nativeConn]struct{}
+	nativeOpen sync.WaitGroup
+	// Set by closeNative, so no connection is admitted once shutdown has cancelled the open ones.
+	closing bool
 }
 
 type refusedEntry struct {
@@ -124,29 +173,52 @@ type refusedEntry struct {
 	until time.Time
 }
 
+// SessionRefusalTTL is how long the proxy answers a refused session from memory before it asks Infisical again.
+const SessionRefusalTTL = 5 * time.Second
+
 const (
-	refusedTTL        = 5 * time.Second
+	refusedTTL        = SessionRefusalTTL
 	maxRefusedEntries = 4096
 )
 
 func newSessionCache(resolver sessionResolver, pollInterval func() time.Duration) *sessionCache {
 	return &sessionCache{
-		resolver:     resolver,
-		pollInterval: pollInterval,
-		entries:      make(map[string]*sessionEntry),
-		tokens:       make(map[string]string),
-		refused:      make(map[string]refusedEntry),
+		resolver:        resolver,
+		pollInterval:    pollInterval,
+		entries:         make(map[string]*sessionEntry),
+		tokens:          make(map[string]string),
+		refused:         make(map[string]refusedEntry),
+		failedRefreshes: make(map[string]refusedEntry),
+		reportedScopes:  make(map[string]refusedEntry),
 	}
 }
 
 func (c *sessionCache) rememberRefusalLocked(key string, err error) {
-	if len(c.refused) >= maxRefusedEntries {
-		c.refused = make(map[string]refusedEntry)
-	}
-	c.refused[key] = refusedEntry{err: err, until: time.Now().Add(refusedTTL)}
+	c.refused = rememberLocked(c.refused, key, err)
 }
 
-var errSessionGone = errors.New("session is no longer valid")
+func rememberLocked(entries map[string]refusedEntry, key string, err error) map[string]refusedEntry {
+	if len(entries) >= maxRefusedEntries {
+		entries = make(map[string]refusedEntry)
+	}
+	entries[key] = refusedEntry{err: err, until: time.Now().Add(refusedTTL)}
+	return entries
+}
+
+// The entry remembered under key while it is fresh. An expired one is dropped.
+func recentLocked(entries map[string]refusedEntry, key string) (refusedEntry, bool) {
+	entry, ok := entries[key]
+	if !ok {
+		return refusedEntry{}, false
+	}
+	if time.Now().Before(entry.until) {
+		return entry, true
+	}
+	delete(entries, key)
+	return refusedEntry{}, false
+}
+
+var errSessionGone = errors.New("session is no longer valid, or it belongs to a different Agent Vault project than this proxy")
 
 // The name the server puts on a 401 that is about this proxy's own token rather than the session it asked
 // about. Without it the two are the same status and the same error class.
@@ -155,6 +227,25 @@ const proxyTokenRejectedName = "ProxyTokenRejected"
 func isProxyTokenRejected(err error) bool {
 	var apiErr *api.APIError
 	return errors.As(err, &apiErr) && apiErr.Name == proxyTokenRejectedName
+}
+
+// The name the server puts on a refusal because the org used its free Agent Vault requests for the month. Not a
+// verdict on the session or the proxy: the proxy keeps running and brokers again once the org adds a payment method or the
+// month resets.
+const freeLimitReachedName = "AgentVaultFreeLimitReached"
+
+func isFreeLimitReached(err error) bool {
+	var apiErr *api.APIError
+	return errors.As(err, &apiErr) && apiErr.Name == freeLimitReachedName
+}
+
+// The server's message names the limit and the day it resets, so the agent gets it when there is one.
+func freeLimitReachedBody(err error) string {
+	var apiErr *api.APIError
+	if errors.As(err, &apiErr) && apiErr.ErrorMessage != "" {
+		return apiErr.ErrorMessage
+	}
+	return freeLimitReachedRefusal
 }
 
 // The names on Infisical's own 404s and 401s. A route miss, a middlebox or an auth proxy in front of Infisical
@@ -182,55 +273,67 @@ func isSessionGone(err error) bool {
 }
 
 func (c *sessionCache) get(sessionToken string) ([]*resolvedService, error) {
-	services, _, err := c.lookup(sessionToken)
-	return services, err
+	found, err := c.lookup(sessionToken, nil)
+	return found.services, err
+}
+
+// getAdmitted is get for a caller that rations lookups of tokens it hasn't seen: admit runs only when Infisical
+// would be asked, so a known session, or one already refused, never spends from the budget.
+func (c *sessionCache) getAdmitted(sessionToken string, admit func() bool) ([]*resolvedService, error) {
+	found, err := c.lookup(sessionToken, admit)
+	return found.services, err
 }
 
 type cacheLookup struct {
+	sessionID  string
 	services   []*resolvedService
 	sessionLog *sessionLogGrant
+	session    *api.AgentVaultResolvedSession
 }
 
-func (c *sessionCache) lookup(sessionToken string) ([]*resolvedService, *sessionLogGrant, error) {
+func (c *sessionCache) lookup(sessionToken string, admit func() bool) (cacheLookup, error) {
 	key := sessionKey(sessionToken)
 
 	c.mu.Lock()
 	entry, ok := c.entries[key]
 	if ok {
 		if entry.expiresAt != nil && time.Now().After(*entry.expiresAt) {
-			delete(c.entries, key)
-			delete(c.tokens, key)
+			c.forgetLocked(key, true)
 			c.mu.Unlock()
-			return nil, nil, errSessionGone
+			return cacheLookup{}, errSessionGone
 		}
 		// Past the grace window the entry is a miss, so a stalled refresh loop cannot keep an old credential alive.
 		if time.Since(entry.fetchedAt) > c.grace() {
-			delete(c.entries, key)
-			delete(c.tokens, key)
+			c.forgetLocked(key, false)
 		} else {
 			entry.lastSeen = time.Now().Round(0)
-			svcs, grant := entry.services, entry.sessionLog
+			found := cacheLookup{sessionID: entry.sessionID, services: entry.services, sessionLog: entry.sessionLog, session: entry.session}
 			c.mu.Unlock()
-			return svcs, grant, nil
+			return found, nil
 		}
 	}
 	if refused, ok := c.refused[key]; ok {
 		if time.Now().Before(refused.until) {
 			c.mu.Unlock()
-			return nil, nil, refused.err
+			return cacheLookup{}, refused.err
 		}
 		delete(c.refused, key)
 	}
 	c.mu.Unlock()
 
 	resolved, err, _ := c.inflight.Do(key, func() (any, error) {
+		// Inside the shared lookup, so connections waiting on the same token spend one ask, not one each.
+		if admit != nil && !admit() {
+			return nil, errResolveBudget
+		}
 		result, err := c.resolver.resolve(sessionToken, nil)
 		if err != nil {
 			// A rejected proxy token is remembered too: the poll loop exits after two such heartbeats, but
 			// until then every agent request would otherwise cost a resolve.
-			if isSessionGone(err) || isProxyTokenRejected(err) {
+			if isSessionGone(err) || isProxyTokenRejected(err) || isFreeLimitReached(err) {
 				c.mu.Lock()
 				c.rememberRefusalLocked(key, err)
+				c.forgetLocked(key, true)
 				c.mu.Unlock()
 			}
 			return nil, err
@@ -244,17 +347,18 @@ func (c *sessionCache) lookup(sessionToken string) ([]*resolvedService, *session
 			expiresAt:  result.ExpiresAt,
 			services:   result.Services,
 			sessionLog: result.SessionLog,
+			session:    result.Session,
 			lastSeen:   time.Now().Round(0),
 			fetchedAt:  time.Now().Round(0),
 		}
 		c.tokens[key] = sessionToken
-		return cacheLookup{services: result.Services, sessionLog: result.SessionLog}, nil
+		c.applyNativeLocked(key, result.Services, result.ExpiresAt)
+		return cacheLookup{sessionID: result.SessionID, services: result.Services, sessionLog: result.SessionLog, session: result.Session}, nil
 	})
 	if err != nil {
-		return nil, nil, err
+		return cacheLookup{}, err
 	}
-	out := resolved.(cacheLookup)
-	return out.services, out.sessionLog, nil
+	return resolved.(cacheLookup), nil
 }
 
 func (c *sessionCache) evictIfFullLocked() {
@@ -266,6 +370,9 @@ func (c *sessionCache) evictIfFullLocked() {
 	var victim string
 	var oldest time.Time
 	for key, entry := range c.entries {
+		if c.pinnedLocked(key) {
+			continue
+		}
 		if now.Sub(entry.lastSeen) > sessionInactiveTTL {
 			victim = key
 			break
@@ -277,8 +384,7 @@ func (c *sessionCache) evictIfFullLocked() {
 	if victim == "" {
 		return
 	}
-	delete(c.entries, victim)
-	delete(c.tokens, victim)
+	c.forgetLocked(victim, false)
 }
 
 // refreshInBackground runs one refresh at a time off the caller's goroutine, so a slow control plane
@@ -299,17 +405,30 @@ func (c *sessionCache) refresh() {
 	targets := make(map[string]string, len(c.tokens))
 	now := time.Now()
 	for key, entry := range c.entries {
-		if now.Sub(entry.lastSeen) > sessionInactiveTTL {
-			delete(c.entries, key)
-			delete(c.tokens, key)
+		if entry.expiresAt != nil && now.After(*entry.expiresAt) {
+			c.forgetLocked(key, true)
 			continue
 		}
-		if entry.expiresAt != nil && now.After(*entry.expiresAt) {
-			delete(c.entries, key)
-			delete(c.tokens, key)
+		if now.Sub(entry.lastSeen) > sessionInactiveTTL && !c.pinnedLocked(key) {
+			c.forgetLocked(key, false)
 			continue
 		}
 		targets[key] = c.tokens[key]
+	}
+	// A pinned session whose entry went past the grace window during an outage is still asked about, and still
+	// ends at its expiry without Infisical saying so. Its connections end once the grace window has passed since
+	// Infisical last answered for it, the same window an HTTP request is served for.
+	for key := range c.native {
+		if _, ok := c.entries[key]; !ok && c.nativeExpiredLocked(key, now) {
+			c.forgetLocked(key, true)
+			continue
+		}
+		if c.nativeStaleLocked(key, now) {
+			c.endStaleNativeOneLocked(key)
+		}
+		if _, ok := targets[key]; !ok && c.tokens[key] != "" {
+			targets[key] = c.tokens[key]
+		}
 	}
 	c.mu.Unlock()
 
@@ -335,6 +454,7 @@ func (c *sessionCache) refreshOne(key, token string) {
 	if entry, ok := c.entries[key]; ok {
 		held = entry.sessionLog
 	}
+	startGen := c.swapGen
 	c.mu.Unlock()
 
 	result, err := c.resolver.resolve(token, held)
@@ -348,18 +468,72 @@ func (c *sessionCache) refreshOne(key, token string) {
 	if entry, ok := c.entries[key]; ok {
 		entry.sessionID = result.SessionID
 		entry.expiresAt = result.ExpiresAt
-		entry.services = result.Services
+		entry.services = keepNewerSwaps(entry, result.Services, startGen)
 		entry.sessionLog = result.SessionLog
+		entry.session = result.Session
 		entry.fetchedAt = time.Now().Round(0)
+		c.applyNativeLocked(key, entry.services, entry.expiresAt)
+		return
 	}
+	// A session that ended while this poll was out lost its token, and must not come back from the poll's answer.
+	if c.pinnedLocked(key) && c.tokens[key] == token {
+		c.entries[key] = &sessionEntry{
+			sessionID:  result.SessionID,
+			expiresAt:  result.ExpiresAt,
+			services:   result.Services,
+			sessionLog: result.SessionLog,
+			session:    result.Session,
+			lastSeen:   time.Now().Round(0),
+			fetchedAt:  time.Now().Round(0),
+		}
+		c.applyNativeLocked(key, result.Services, result.ExpiresAt)
+	}
+}
+
+// keepNewerSwaps puts back a credential swapped in after the poll began when the poll returned a token that
+// swap replaced. Swaps the poll began after are settled by it and forgotten.
+func keepNewerSwaps(entry *sessionEntry, polled []*resolvedService, startGen uint64) []*resolvedService {
+	if len(entry.swaps) == 0 {
+		return polled
+	}
+	services, copied := polled, false
+	for i, svc := range polled {
+		swap, ok := entry.swaps[svc.id]
+		if !ok || swap.gen <= startGen || swap.hostPattern != svc.hostPattern || !svc.credential.refreshable || !swap.replaced[credentialHash(&svc.credential)] {
+			continue
+		}
+		if !copied {
+			services, copied = append([]*resolvedService(nil), polled...), true
+		}
+		updated := *svc
+		updated.credential = swap.installed
+		services[i] = &updated
+	}
+	for id, swap := range entry.swaps {
+		if swap.gen <= startGen {
+			delete(entry.swaps, id)
+		}
+	}
+	return services
 }
 
 func (c *sessionCache) handleRefreshFailure(key string, err error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
+	// Checked here too, not only when a refresh starts: a slow refresh would otherwise hold database and SSH
+	// connections open past the grace window. Only a failed resolve counts, so a session still queued in a long
+	// refresh isn't mistaken for one Infisical can't answer for.
+	if c.nativeStaleLocked(key, time.Now()) {
+		c.endStaleNativeOneLocked(key)
+	}
+
 	entry, ok := c.entries[key]
 	if !ok {
+		// A pinned session whose entry is gone is still polled, and a verdict on it still ends its connections.
+		if c.pinnedLocked(key) && (isProxyTokenRejected(err) || isSessionGone(err) || isFreeLimitReached(err)) {
+			c.forgetLocked(key, true)
+		}
 		return
 	}
 
@@ -367,26 +541,43 @@ func (c *sessionCache) handleRefreshFailure(key string, err error) {
 	// may outlive it. Only the reason logged differs.
 	if isProxyTokenRejected(err) {
 		log.Warn().Err(err).Str("sessionId", entry.sessionID).Msg("agent-vault: Infisical rejected this proxy's token, dropping the session")
-		delete(c.entries, key)
-		delete(c.tokens, key)
+		c.forgetLocked(key, true)
 		return
 	}
 	if isSessionGone(err) {
 		log.Debug().Err(err).Str("sessionId", entry.sessionID).Msg("agent-vault: session no longer valid, dropping")
-		delete(c.entries, key)
-		delete(c.tokens, key)
+		c.forgetLocked(key, true)
+		return
+	}
+	// Dropped at once, not after the grace window: a credential must not outlive the org's free requests.
+	if isFreeLimitReached(err) {
+		log.Warn().Str("sessionId", entry.sessionID).Msg("agent-vault: this organization used its free Agent Vault requests for this month, dropping the session's credentials")
+		c.rememberRefusalLocked(key, err)
+		c.forgetLocked(key, true)
 		return
 	}
 
+	// Infisical being unreachable isn't a verdict on the session, so open connections stay and keep being polled
+	// until the grace window has passed since its last answer, when refresh closes them.
 	grace := c.grace()
 	if time.Since(entry.fetchedAt) > grace {
 		log.Warn().
 			Str("sessionId", entry.sessionID).
 			Dur("grace", grace).
 			Msg("agent-vault: could not reach Infisical within the grace window, dropping session")
-		delete(c.entries, key)
-		delete(c.tokens, key)
+		c.forgetLocked(key, false)
 	}
+}
+
+// The session's current log grant, nil when logs are off, and false once its entry is gone.
+func (c *sessionCache) currentGrant(key string) (*sessionLogGrant, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	entry, ok := c.entries[key]
+	if !ok {
+		return nil, false
+	}
+	return entry.sessionLog, true
 }
 
 func (c *sessionCache) grace() time.Duration {
@@ -397,7 +588,254 @@ func (c *sessionCache) close() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	for key := range c.entries {
-		delete(c.entries, key)
-		delete(c.tokens, key)
+		c.forgetLocked(key, true)
 	}
+	for key := range c.native {
+		c.endNativeLocked(key)
+	}
+}
+
+var (
+	errCredentialNotRefreshable = errors.New("the refresh did not return a refreshable credential")
+	errServiceHostChanged       = errors.New("the service's host pattern changed while its credential was refreshed")
+	errServiceRemoved           = errors.New("the service was removed from the session while its credential was refreshed")
+)
+
+// Infisical answered a refresh with the token the upstream rejected, or with one the upstream rejected too.
+// The status is Infisical's view of the service's OAuth connection, kept for the agent's message.
+type refreshNotRecoveredError struct {
+	status string
+	// The upstream answered the refreshed token with an insufficient_scope challenge of its own.
+	scopeChallenged bool
+}
+
+func (e *refreshNotRecoveredError) Error() string {
+	return fmt.Sprintf("the refresh did not produce a token the upstream accepts (status %q)", e.status)
+}
+
+// The refusals that drop the session's credentials. A 404 from credential-refresh can mean the service is gone
+// rather than the session, so it stays a credential failure.
+func refreshEndedSession(err error) bool {
+	var apiErr *api.APIError
+	if errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusNotFound {
+		return false
+	}
+	return isProxyTokenRejected(err) || isSessionGone(err) || isFreeLimitReached(err)
+}
+
+func credentialHash(cred *credential) string {
+	sum := sha256.Sum256(cred.value)
+	return hex.EncodeToString(sum[:])
+}
+
+// refreshCredential asks Infisical for a replacement of the token the upstream rejected and swaps it into
+// the session's entry, so later requests inject it. hostPattern is that of the cached service whose
+// credential the rejected request carried: a token minted for wherever the service points now must never be
+// sent to where it used to point. The status is Infisical's view of the service's OAuth connection, empty
+// when the answer did not come from Infisical.
+func (c *sessionCache) refreshCredential(sessionToken, serviceID, hostPattern string, rejected *credential) (credential, string, error) {
+	refresher, ok := c.resolver.(credentialRefresher)
+	if !ok {
+		return credential{}, "", errCredentialNotRefreshable
+	}
+	key := sessionKey(sessionToken)
+	rejectedHash := credentialHash(rejected)
+
+	type refreshed struct {
+		cred   credential
+		status string
+	}
+	flightKey := credentialFlightKey(key, serviceID, hostPattern, rejectedHash, nil)
+	result, err, _ := c.credentialFlights.Do(flightKey, func() (any, error) {
+		// Checked inside the flight so a caller that arrives after another refresh finished also reuses
+		// its replacement instead of asking Infisical again.
+		if current, ok := c.currentCredential(key, serviceID, hostPattern); ok && current.refreshable && credentialHash(&current) != rejectedHash {
+			return refreshed{cred: current}, nil
+		}
+		if err := c.recentRefreshFailure(flightKey); err != nil {
+			return nil, err
+		}
+		fresh, status, err := refresher.refreshCredential(sessionToken, serviceID, hostPattern, rejectedHash)
+		if err != nil {
+			c.rememberRefreshFailure(flightKey, err)
+			// Dropped and refused the way lookup would, so the agent's next request is turned away at once
+			// rather than served from the entry until the next poll.
+			if refreshEndedSession(err) {
+				c.dropSession(key, err)
+			}
+			return nil, err
+		}
+		if status != "" && status != oauthStatusConnected {
+			log.Warn().Str("serviceId", serviceID).Str("status", status).
+				Msg("agent-vault: Infisical reports this service's OAuth connection needs attention")
+		}
+		if fresh.kind != credentialBearer || !fresh.refreshable {
+			c.rememberRefreshFailure(flightKey, errCredentialNotRefreshable)
+			return nil, errCredentialNotRefreshable
+		}
+		swapped, err := c.swapCredential(key, serviceID, hostPattern, rejectedHash, fresh)
+		if err != nil {
+			return nil, err
+		}
+		// Infisical hands back the token it has when it could not refresh it. Remembered like a failure, so
+		// requests repeating that token get the same answer rather than another refresh each. A newer token
+		// in the cache still wins: swapCredential returns it instead.
+		if credentialHash(&swapped) == rejectedHash {
+			err := &refreshNotRecoveredError{status: status}
+			c.rememberRefreshFailure(flightKey, err)
+			return nil, err
+		}
+		return refreshed{cred: swapped, status: status}, nil
+	})
+	if err != nil {
+		return credential{}, "", err
+	}
+	answer := result.(refreshed)
+	return answer.cred, answer.status, nil
+}
+
+func (c *sessionCache) recentRefreshFailure(flightKey string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	failed, _ := recentLocked(c.failedRefreshes, flightKey)
+	return failed.err
+}
+
+func (c *sessionCache) rememberRefreshFailure(flightKey string, err error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.failedRefreshes = rememberLocked(c.failedRefreshes, flightKey, err)
+}
+
+// rememberRejectedRefresh records that the token a refresh produced was rejected by the upstream as well, so
+// the next 401 for it gets its answer without asking Infisical again within the window.
+func (c *sessionCache) rememberRejectedRefresh(sessionToken, serviceID, hostPattern string, rejected *credential, status string, scopeChallenged bool) {
+	flightKey := credentialFlightKey(sessionKey(sessionToken), serviceID, hostPattern, credentialHash(rejected), nil)
+	c.rememberRefreshFailure(flightKey, &refreshNotRecoveredError{status: status, scopeChallenged: scopeChallenged})
+}
+
+func (c *sessionCache) dropSession(key string, err error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.forgetLocked(key, true)
+	c.rememberRefusalLocked(key, err)
+}
+
+// reportMissingScopes tells Infisical which scopes the upstream's 403 insufficient_scope challenge asked for,
+// so the service shows what reauthorizing has to request. Nothing is refreshed, so the cache is left alone.
+func (c *sessionCache) reportMissingScopes(sessionToken, serviceID, hostPattern string, rejected *credential, requiredScopes []string) error {
+	refresher, ok := c.resolver.(credentialRefresher)
+	if !ok {
+		return errCredentialNotRefreshable
+	}
+	rejectedHash := credentialHash(rejected)
+	flightKey := credentialFlightKey(sessionKey(sessionToken), serviceID, hostPattern, rejectedHash, requiredScopes)
+	c.mu.Lock()
+	_, reported := recentLocked(c.reportedScopes, flightKey)
+	c.mu.Unlock()
+	if reported {
+		return nil
+	}
+	_, err, _ := c.credentialFlights.Do(flightKey, func() (any, error) {
+		err := refresher.reportMissingScopes(sessionToken, serviceID, hostPattern, rejectedHash, requiredScopes)
+		c.mu.Lock()
+		c.reportedScopes = rememberLocked(c.reportedScopes, flightKey, err)
+		c.mu.Unlock()
+		return nil, err
+	})
+	return err
+}
+
+// Scope reports are bound to the rejected token, so neither different tokens nor different scope sets may
+// share a call. The set is canonical so another order or repeats still share one call.
+func credentialFlightKey(key, serviceID, hostPattern, rejectedHash string, requiredScopes []string) string {
+	base := key + "\x00" + serviceID + "\x00" + hostPattern + "\x00" + rejectedHash
+	if len(requiredScopes) == 0 {
+		return base + "\x00refresh"
+	}
+	scopes := append([]string(nil), requiredScopes...)
+	slices.Sort(scopes)
+	scopes = slices.Compact(scopes)
+	return base + "\x00scopes\x00" + strings.Join(scopes, " ")
+}
+
+func (c *sessionCache) currentCredential(key, serviceID, hostPattern string) (credential, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	entry, ok := c.entries[key]
+	if !ok {
+		return credential{}, false
+	}
+	for _, svc := range entry.services {
+		if svc.id == serviceID && svc.hostPattern == hostPattern {
+			return svc.credential, true
+		}
+	}
+	return credential{}, false
+}
+
+// Copy on write: requests in flight hold pointers into the old slice and read it without the lock. A newer
+// cached credential wins over a delayed refresh, including the credential returned for retry.
+// A poll that removed the session or the service during the refresh revoked that access, so the fresh token
+// is refused rather than handed to a retry.
+// Every refreshable service still holding the replaced token gets the new one too: services on one OAuth
+// variable share its token, and one left on the replaced token would send it upstream until the next poll.
+func (c *sessionCache) swapCredential(key, serviceID, hostPattern, replacedHash string, cred credential) (credential, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	entry, ok := c.entries[key]
+	if !ok {
+		return credential{}, errSessionGone
+	}
+	asking := slices.IndexFunc(entry.services, func(svc *resolvedService) bool { return svc.id == serviceID })
+	if asking < 0 {
+		return credential{}, errServiceRemoved
+	}
+	svc := entry.services[asking]
+	if svc.hostPattern != hostPattern {
+		return credential{}, errServiceHostChanged
+	}
+	if !svc.credential.refreshable {
+		return credential{}, errCredentialNotRefreshable
+	}
+	if credentialHash(&svc.credential) != replacedHash {
+		return svc.credential, nil
+	}
+
+	services := append([]*resolvedService(nil), entry.services...)
+	c.swapGen++
+	if entry.swaps == nil {
+		entry.swaps = make(map[string]*credentialSwap)
+	}
+	for i, holder := range services {
+		if !holder.credential.refreshable || credentialHash(&holder.credential) != replacedHash {
+			continue
+		}
+		// A sibling keeps its own header settings and takes only the new token.
+		installed := cred
+		if holder.id != serviceID {
+			installed = holder.credential
+			installed.value = cred.value
+		}
+		updated := *holder
+		updated.credential = installed
+		services[i] = &updated
+
+		swap, ok := entry.swaps[holder.id]
+		if !ok {
+			swap = &credentialSwap{replaced: make(map[string]bool)}
+			entry.swaps[holder.id] = swap
+		}
+		swap.installed = installed
+		if swap.hostPattern != holder.hostPattern {
+			swap.hostPattern = holder.hostPattern
+			clear(swap.replaced)
+		}
+		swap.replaced[replacedHash] = true
+		swap.gen = c.swapGen
+		// A refresh can hand back the token it replaced, which is then current rather than stale.
+		delete(swap.replaced, credentialHash(&cred))
+	}
+	entry.services = services
+	return cred, nil
 }

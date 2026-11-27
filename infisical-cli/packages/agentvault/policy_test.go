@@ -332,3 +332,67 @@ func TestAnEscapedSlashIsRefusedWhateverElseThePathCarries(t *testing.T) {
 		}
 	}
 }
+
+func TestPersonalValuesMissing(t *testing.T) {
+	svc := serviceWithPolicy(nil, nil)
+	svc.accessBundleName = "on-call"
+	svc.personalValuesMissing = true
+
+	err := checkServicePolicy(svc, requestTo(t, "GET", "/x"))
+	if !errors.Is(err, errPolicyBlocked) {
+		t.Fatalf("a service missing the owner's personal values should be blocked, got %v", err)
+	}
+	if !strings.Contains(err.Error(), `service "github" needs your own credential or sign-in`) ||
+		!strings.Contains(err.Error(), "under Services in Infisical Agent Vault") ||
+		!strings.Contains(err.Error(), "It can take a few minutes to apply") {
+		t.Fatalf("the refusal should say what to set up, where, and that saving takes a poll to apply: %q", err.Error())
+	}
+
+	svc.personalValuesMissing = false
+	if err := checkServicePolicy(svc, requestTo(t, "GET", "/x")); err != nil {
+		t.Fatalf("a configured service should pass: %v", err)
+	}
+
+	// The setup message wins over the method and path rules, so the owner learns the one thing they can fix.
+	restricted := serviceWithPolicy([]string{"GET"}, []string{"/repos"})
+	restricted.accessBundleName = "on-call"
+	restricted.personalValuesMissing = true
+	for _, req := range []*http.Request{requestTo(t, "POST", "/repos"), requestTo(t, "GET", "/admin")} {
+		err := checkServicePolicy(restricted, req)
+		if err == nil || !strings.Contains(err.Error(), "needs your own credential or sign-in") {
+			t.Fatalf("%s %s on a service missing personal values should get the setup message, got %v", req.Method, req.URL.Path, err)
+		}
+	}
+}
+
+func TestARemovedSignInIsRefusedBeforeMissingPersonalValues(t *testing.T) {
+	svc := serviceWithPolicy([]string{"GET"}, nil)
+	svc.credentialRemoved = true
+	// The server sets both, so an older proxy that only knows personalValuesMissing still refuses the service.
+	svc.personalValuesMissing = true
+
+	err := checkServicePolicy(svc, requestTo(t, "POST", "/x"))
+	if !errors.Is(err, errPolicyBlocked) {
+		t.Fatalf("a service whose sign-in was removed should be blocked, got %v", err)
+	}
+	if !strings.Contains(err.Error(), `service "github"`) ||
+		!strings.Contains(err.Error(), "This service's sign-in was removed in Infisical Agent Vault.") {
+		t.Fatalf("the refusal should say the sign-in was removed: %q", err.Error())
+	}
+}
+
+func TestAnUnconnectedSignInIsRefusedBeforeMissingPersonalValues(t *testing.T) {
+	svc := serviceWithPolicy([]string{"GET"}, nil)
+	svc.credentialNotConnected = true
+	// The server sets both, so an older proxy that only knows personalValuesMissing still refuses the service.
+	svc.personalValuesMissing = true
+
+	err := checkServicePolicy(svc, requestTo(t, "POST", "/x"))
+	if !errors.Is(err, errPolicyBlocked) {
+		t.Fatalf("a service whose sign-in isn't connected should be blocked, got %v", err)
+	}
+	want := `service "github": blocked by service policy. The sign-in used by this service isn't connected in Infisical Agent Vault.`
+	if err.Error() != want {
+		t.Fatalf("refusal = %q, want %q", err.Error(), want)
+	}
+}

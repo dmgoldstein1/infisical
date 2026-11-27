@@ -5,10 +5,12 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"sync"
 	"sync/atomic"
 	"testing"
 
+	"github.com/Infisical/infisical-merge/packages/api"
 	"github.com/Infisical/infisical-merge/packages/config"
 )
 
@@ -93,5 +95,223 @@ func TestAResolveAsksForTheKeyUntilItHoldsOne(t *testing.T) {
 	defer mu.Unlock()
 	if len(asked) != 2 || asked[0] || !asked[1] {
 		t.Fatalf("hasSessionLogKey went out as %v; it must be false until the proxy holds the key, then true", asked)
+	}
+}
+
+func TestAResolveCarriesPersonalValuesMissingAndMemberProvided(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		// An older server leaves both fields out, which has to read as set up and shared.
+		_, _ = w.Write([]byte(`{"sessionId":"s1","services":[
+			{"id":"a","name":"github","accessBundleName":"b","hostPattern":"api.github.com","credential":{"type":"passthrough"},"personalValuesMissing":true,"memberProvided":true},
+			{"id":"b","name":"slack","accessBundleName":"b","hostPattern":"slack.com","credential":{"type":"passthrough"}}
+		],"sessionLogs":{"enabled":false}}`))
+	}))
+	defer srv.Close()
+	old := config.INFISICAL_URL
+	config.INFISICAL_URL = srv.URL + "/api"
+	defer func() { config.INFISICAL_URL = old }()
+
+	resolver, err := newInfisicalResolver(func() string { return "ptok" })
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := resolver.resolve("tok", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	missing := map[string]bool{}
+	memberProvided := map[string]bool{}
+	for _, svc := range result.Services {
+		missing[svc.name] = svc.personalValuesMissing
+		memberProvided[svc.name] = svc.memberProvided
+	}
+	if !missing["github"] {
+		t.Fatal("personalValuesMissing: true on the wire did not reach the resolved service")
+	}
+	if missing["slack"] {
+		t.Fatal("a service without the field resolved as missing its personal values")
+	}
+	if !memberProvided["github"] {
+		t.Fatal("memberProvided: true on the wire did not reach the resolved service")
+	}
+	if memberProvided["slack"] {
+		t.Fatal("a service without the field resolved as member provided")
+	}
+}
+
+// A database or SSH service whose host pattern isn't null, with or without a target, must still get no HTTP patterns,
+// or an HTTP request to that host would carry its password.
+func TestAResolvedNativeServiceGetsNoHTTPHostPatterns(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"sessionId":"s1","services":[
+			{"id":"a","name":"with-target","type":"postgres","hostPattern":"db.internal","native":{"host":"db.internal","port":5432,"database":"app"},"credential":{"type":"basic","username":"u","password":"p"}},
+			{"id":"b","name":"no-target","type":"postgres","hostPattern":"db.internal","native":null,"credential":{"type":"basic","username":"u","password":"p"}},
+			{"id":"c","name":"api","type":"http","hostPattern":"api.internal","credential":{"type":"passthrough"}}
+		],"sessionLogs":{"enabled":false}}`))
+	}))
+	defer srv.Close()
+	old := config.INFISICAL_URL
+	config.INFISICAL_URL = srv.URL + "/api"
+	defer func() { config.INFISICAL_URL = old }()
+
+	resolver, err := newInfisicalResolver(func() string { return "ptok" })
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := resolver.resolve("tok", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, svc := range result.Services {
+		if svc.kind == serviceKindPostgres && len(svc.hostPatterns) != 0 {
+			t.Fatalf("native service %q resolved with HTTP host patterns %v", svc.name, svc.hostPatterns)
+		}
+		if svc.kind == serviceKindHTTP && len(svc.hostPatterns) == 0 {
+			t.Fatal("the HTTP service lost its host patterns, so the check above proves nothing")
+		}
+	}
+}
+
+// A tls object the server leaves out, or sends only in part, must not turn TLS or verification off.
+func TestADatabaseTargetKeepsTLSOnUnlessTheServerTurnsItOff(t *testing.T) {
+	for _, tc := range []struct {
+		name               string
+		tls                string
+		wantTLS, wantCheck bool
+	}{
+		{"missing", ``, true, true},
+		{"null", `,"tls":null`, true, true},
+		{"empty", `,"tls":{}`, true, true},
+		{"enabled only", `,"tls":{"enabled":true}`, true, true},
+		{"verify off", `,"tls":{"enabled":true,"verify":false}`, true, false},
+		{"off", `,"tls":{"enabled":false,"verify":false}`, false, false},
+	} {
+		var wire api.AgentVaultNativeTarget
+		if err := json.Unmarshal([]byte(`{"host":"db.internal","port":5432,"database":"app"`+tc.tls+`}`), &wire); err != nil {
+			t.Fatal(err)
+		}
+		target := toNativeTarget(serviceKindPostgres, &wire)
+		if target == nil || target.tlsEnabled != tc.wantTLS || target.tlsVerify != tc.wantCheck {
+			t.Errorf("%s: target %+v, want tls %v and verify %v", tc.name, target, tc.wantTLS, tc.wantCheck)
+		}
+	}
+}
+
+func resolveBody(t *testing.T, body string) *resolveResult {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(body))
+	}))
+	defer srv.Close()
+	old := config.INFISICAL_URL
+	config.INFISICAL_URL = srv.URL + "/api"
+	defer func() { config.INFISICAL_URL = old }()
+
+	resolver, err := newInfisicalResolver(func() string { return "ptok" })
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := resolver.resolve("tok", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return res
+}
+
+func TestAResolveCarriesEachServicesHookAndTheSession(t *testing.T) {
+	res := resolveBody(t, `{"sessionId":"s1","services":[
+			{"id":"a","name":"stripe","accessBundleId":"b-1","accessBundleName":"payments","hostPattern":"api.stripe.com","credential":{"type":"passthrough"},
+				"hook":{"id":"h-1","name":"refund-gate","url":"https://hooks.example.com/stripe","secret":"`+testHookSecret+`","methods":["post"],"paths":["/v1/refunds/"],"tools":null}},
+			{"id":"b","name":"linear","accessBundleId":null,"hostPattern":"x.example","credential":{"type":"passthrough"},
+				"hook":{"id":"h-1","name":"refund-gate","url":"not a url","secret":"`+testHookSecret+`","tools":["delete_issue"]}},
+			{"id":"c","name":"plain","accessBundleId":"b-1","hostPattern":"y.example","credential":{"type":"passthrough"},"hook":null},
+			{"id":"d","name":"older","hostPattern":"z.example","credential":{"type":"passthrough"}}
+		],"sessionLogs":{"enabled":false},
+		"session":{"label":"Nightly refunds","actor":{"type":"machineIdentity","id":"m-1","name":"support-agent","email":null},"onBehalfOf":{"id":"u-1","name":"Ana Silva","email":"ana@acme.com"},"metadata":{"ticket":"T-1"}}}`)
+
+	stripe, linear, plain, older := res.Services[0], res.Services[1], res.Services[2], res.Services[3]
+	hook := stripe.hook
+	if stripe.accessBundleID != "b-1" || hook == nil || hook.id != "h-1" || hook.name == nil || *hook.name != "refund-gate" ||
+		hook.origin() != "https://hooks.example.com" || string(hook.secret) != testHookSecret {
+		t.Fatalf("stripe = %+v hook %+v", stripe, hook)
+	}
+	if !reflect.DeepEqual(hook.methods, map[string]bool{"POST": true}) || !reflect.DeepEqual(hook.paths, []string{"/v1/refunds"}) || hook.tools != nil {
+		t.Fatalf("stripe narrowing = %+v", hook)
+	}
+	if linear.accessBundleID != "" || linear.hook == nil || linear.hook.url != nil || !linear.hook.tools["delete_issue"] {
+		t.Fatalf("an unusable hook must stay a hook that fails, got %+v", linear.hook)
+	}
+	if plain.hook != nil || older.hook != nil {
+		t.Fatal("a service with no hook got one")
+	}
+	s := res.Session
+	if s == nil || *s.Label != "Nightly refunds" || s.Actor.Type != "machineIdentity" || s.Actor.Email != nil ||
+		s.OnBehalfOf == nil || *s.OnBehalfOf.Email != "ana@acme.com" || s.Metadata["ticket"] != "T-1" {
+		t.Fatalf("session = %+v", s)
+	}
+}
+
+// Servers before named hooks send only the URL and secret, which asks the hook about everything.
+func TestAnOlderServersHookIsAskedAboutEveryRequestOfItsService(t *testing.T) {
+	res := resolveBody(t, `{"sessionId":"s1","services":[
+			{"id":"a","name":"stripe","hostPattern":"api.stripe.com","credential":{"type":"passthrough"},"hook":{"url":"https://hooks.example.com/stripe","secret":"`+testHookSecret+`"}}
+		],"sessionLogs":{"enabled":false}}`)
+
+	svc := res.Services[0]
+	hook := svc.hook
+	if hook == nil || hook.url == nil || hook.id != "" || hook.name != nil || hook.methods != nil || hook.paths != nil || hook.tools != nil {
+		t.Fatalf("hook = %+v", hook)
+	}
+	if !hook.matches(svc, httptest.NewRequest(http.MethodDelete, "https://api.stripe.com/v1/anything", nil), nil) {
+		t.Fatal("an older server's hook skipped a request")
+	}
+}
+
+func TestAResolveCarriesCredentialRemoved(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		// An older server leaves the field out, which has to read as still signed in.
+		_, _ = w.Write([]byte(`{"sessionId":"s1","services":[
+			{"id":"a","name":"gdrive","hostPattern":"www.googleapis.com","credential":{"type":"passthrough"},"personalValuesMissing":true,"credentialRemoved":true},
+			{"id":"b","name":"slack","hostPattern":"slack.com","credential":{"type":"passthrough"}},
+			{"id":"c","name":"linear","hostPattern":"mcp.linear.app","credential":{"type":"passthrough"},"personalValuesMissing":true,"credentialNotConnected":true}
+		],"sessionLogs":{"enabled":false}}`))
+	}))
+	defer srv.Close()
+	old := config.INFISICAL_URL
+	config.INFISICAL_URL = srv.URL + "/api"
+	defer func() { config.INFISICAL_URL = old }()
+
+	resolver, err := newInfisicalResolver(func() string { return "ptok" })
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := resolver.resolve("tok", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	removed := map[string]bool{}
+	notConnected := map[string]bool{}
+	for _, svc := range result.Services {
+		removed[svc.name] = svc.credentialRemoved
+		notConnected[svc.name] = svc.credentialNotConnected
+	}
+	if !notConnected["linear"] || removed["linear"] {
+		t.Fatal("credentialNotConnected: true on the wire did not reach the resolved service on its own")
+	}
+	if notConnected["gdrive"] || notConnected["slack"] {
+		t.Fatal("a service without credentialNotConnected resolved as not connected")
+	}
+	if !removed["gdrive"] {
+		t.Fatal("credentialRemoved: true on the wire did not reach the resolved service")
+	}
+	if removed["slack"] {
+		t.Fatal("a service without the field resolved as having its sign-in removed")
 	}
 }

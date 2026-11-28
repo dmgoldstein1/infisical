@@ -67,7 +67,7 @@ export const CodeSigningScopeSchema = z.object({
     .max(45)
     .optional()
     .transform((value) => (value === "" ? undefined : value))
-    .refine((value) => value === undefined || z.union([z.ipv4(), z.ipv6()]).safeParse(value).success, "Must be a valid IP address"),
+    .refine((value) => value === undefined || z.string().ip().safeParse(value).success, "Must be a valid IP address"),
   [CodeSigningScopeField.DataHash]: scopeSha256("Data hash must be a 64-character SHA-256 hex string")
 });
 

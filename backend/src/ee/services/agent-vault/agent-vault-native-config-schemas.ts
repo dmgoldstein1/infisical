@@ -52,7 +52,7 @@ export const AGENT_VAULT_NATIVE_MESSAGES = {
 
 // Underscores are allowed because Docker Compose service names use them and Go's resolver accepts them.
 const HOSTNAME_RE = new RE2(/^[a-z0-9_](?:[a-z0-9_-]*[a-z0-9_])?(?:\.[a-z0-9_](?:[a-z0-9_-]*[a-z0-9_])?)*$/i);
-const IPV6_SCHEMA = z.ipv6();
+const IPV6_SCHEMA = z.string().ip({ version: "v6" });
 // eslint-disable-next-line no-control-regex
 const NO_CONTROL_CHARS_RE = new RE2(/^[^\x00-\x1f\x7f]*$/);
 // A PEM spans lines, so only those control characters are allowed. config is plaintext jsonb, which rejects a NUL.

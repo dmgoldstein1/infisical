@@ -50,7 +50,7 @@ const validateScopeValue = (field: CodeSigningScopeField, value: string): string
     case CodeSigningScopeField.DataHash:
       return SHA256_HEX.test(value) ? undefined : "Must be a 64-character SHA-256 hex string";
     case CodeSigningScopeField.IpAddress:
-      return z.union([z.ipv4(), z.ipv6()]).safeParse(value).success ? undefined : "Must be a valid IP address";
+      return z.string().ip().safeParse(value).success ? undefined : "Must be a valid IP address";
     case CodeSigningScopeField.Command:
       return value.length <= MAX_COMMAND_LENGTH
         ? undefined

@@ -188,7 +188,7 @@ const MAX_SSH_USERNAME_LENGTH = 256;
 
 const NATIVE_HOSTNAME_RE =
   /^[a-z0-9_](?:[a-z0-9_-]*[a-z0-9_])?(?:\.[a-z0-9_](?:[a-z0-9_-]*[a-z0-9_])?)*$/i;
-const IPV6_SCHEMA = z.ipv6();
+const IPV6_SCHEMA = z.string().ip({ version: "v6" });
 // A PEM spans lines, so only those control characters are allowed.
 // eslint-disable-next-line no-control-regex
 const PEM_CONTROL_CHARS_RE = /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/;

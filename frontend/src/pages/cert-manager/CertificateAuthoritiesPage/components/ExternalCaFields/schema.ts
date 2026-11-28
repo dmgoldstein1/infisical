@@ -44,7 +44,8 @@ const acmeConfigurationSchema = z
     eabKid: z.string().optional(),
     eabHmacKey: z.string().optional(),
     dnsResolver: z
-      .union([z.ipv4(), z.ipv6()], { message: "Must be a valid IP address" })
+      .string()
+      .ip({ message: "Must be a valid IP address" })
       .or(z.literal(""))
       .optional()
   })

@@ -49,4 +49,38 @@ describe("response schema hooks", () => {
 
     await app.close();
   });
+
+  test("backfills a default rate limit onto routes that declare none", async () => {
+    const app = Fastify({ logger: false }).withTypeProvider<ZodTypeProvider>();
+    app.setValidatorCompiler(validatorCompiler);
+    app.setSerializerCompiler(serializerCompiler);
+    await app.register(registerResponseSchemaHooks);
+
+    const seen: Array<{ url: string; rateLimit: unknown }> = [];
+    app.addHook("onRoute", (routeOptions) => {
+      seen.push({
+        url: routeOptions.url,
+        rateLimit: (routeOptions.config as { rateLimit?: unknown } | undefined)?.rateLimit
+      });
+    });
+
+    app.route({
+      method: "GET",
+      url: "/api/v1/unlimited",
+      handler: async () => ({ ok: true })
+    });
+    app.route({
+      method: "GET",
+      url: "/healthcheck",
+      handler: async () => ({ ok: true })
+    });
+    await app.ready();
+
+    const limited = seen.find((r) => r.url === "/api/v1/unlimited");
+    expect(limited?.rateLimit).toMatchObject({ max: 600 });
+    const exempt = seen.find((r) => r.url === "/healthcheck");
+    expect(exempt?.rateLimit).toBeUndefined();
+
+    await app.close();
+  });
 });
